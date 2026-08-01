@@ -1,0 +1,60 @@
+name: Desplegar a GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Permite lanzar el despliegue a mano desde la pestaña Actions.
+  workflow_dispatch:
+
+# Un solo despliegue a la vez; si llegan varios push seguidos, gana el último.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # El proyecto no compila TypeScript en el build (Vite solo transpila),
+      # así que el chequeo de tipos va explícito para que un error rompa aquí
+      # y no en producción.
+      - name: Verificar tipos
+        run: pnpm exec tsc --noEmit
+
+      - name: Construir
+        env:
+          # GitHub Pages sirve en https://usuario.github.io/<repo>/
+          BASE_PATH: /${{ github.event.repository.name }}/
+        run: pnpm build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

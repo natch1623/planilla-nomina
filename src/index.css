@@ -1,0 +1,267 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import 'tailwindcss';
+
+/*
+  El tema se controla con `data-theme` en <html>, no con `prefers-color-scheme`,
+  para que el interruptor de la aplicación pueda forzar claro u oscuro. El modo
+  "sistema" simplemente escribe el valor resuelto en ese atributo.
+*/
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* ---------------------------------------------------------------
+   Paleta base. Cada token es semántico (para qué sirve), no
+   descriptivo (de qué color es), de modo que el tema oscuro solo
+   reemplaza valores y ningún componente necesita saberlo.
+   --------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+
+  --app: #eef2f8;
+  --surface: #ffffff;
+  --raised: #f6f8fc;
+  --sunken: #e9eef6;
+
+  --line: #e1e7f0;
+  --line-strong: #cbd5e6;
+
+  --fg: #16233b;
+  --muted: #64748b;
+  --subtle: #94a3b8;
+
+  --nav: #16243d;
+  --nav-fg: #ffffff;
+  --nav-muted: #93a8c9;
+  --nav-line: #2a3d5e;
+  --nav-raised: #101c31;
+
+  --brand: #2f6fd0;
+  --brand-hover: #245cb2;
+  --brand-soft: #e8f0fc;
+  --brand-fg: #ffffff;
+
+  --ok: #0e9f6e;
+  --ok-soft: #e0f8ee;
+
+  --danger: #dc2626;
+  --danger-soft: #fdeaea;
+
+  --amber: #c2680a;
+  --amber-soft: #fdf0d5;
+
+  --violet: #7c3aed;
+  --violet-soft: #f3efff;
+
+  --teal: #0e7490;
+  --teal-soft: #dff4f9;
+
+  --weekend: #eceff5;
+
+  --shadow-sm: 0 1px 2px rgb(16 32 60 / 0.06);
+  --shadow-md: 0 4px 14px -4px rgb(16 32 60 / 0.12);
+  --shadow-lg: 0 18px 40px -12px rgb(16 32 60 / 0.28);
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --app: #0b1017;
+  --surface: #141b25;
+  --raised: #1a2330;
+  --sunken: #222d3d;
+
+  --line: #26303f;
+  --line-strong: #3a4759;
+
+  --fg: #e7eef9;
+  --muted: #93a3bc;
+  --subtle: #64748b;
+
+  --nav: #101720;
+  --nav-fg: #f1f5fb;
+  --nav-muted: #8296b4;
+  --nav-line: #26303f;
+  --nav-raised: #0a1017;
+
+  --brand: #5b93e8;
+  --brand-hover: #7aa9ef;
+  --brand-soft: #17263e;
+  --brand-fg: #0b1017;
+
+  --ok: #34d399;
+  --ok-soft: #10281f;
+
+  --danger: #f87171;
+  --danger-soft: #331a1c;
+
+  --amber: #fbbf24;
+  --amber-soft: #2f2411;
+
+  --violet: #a78bfa;
+  --violet-soft: #221c3a;
+
+  --teal: #22d3ee;
+  --teal-soft: #0d2a33;
+
+  --weekend: #101821;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 4px 14px -4px rgb(0 0 0 / 0.55);
+  --shadow-lg: 0 18px 40px -12px rgb(0 0 0 / 0.7);
+}
+
+/*
+  `inline` hace que las utilidades emitan `var(--token)` en vez de copiar el
+  valor: es lo que permite que cambiar `data-theme` repinte toda la interfaz.
+*/
+@theme inline {
+  --color-app: var(--app);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+
+  --color-nav: var(--nav);
+  --color-nav-fg: var(--nav-fg);
+  --color-nav-muted: var(--nav-muted);
+  --color-nav-line: var(--nav-line);
+  --color-nav-raised: var(--nav-raised);
+
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-fg: var(--brand-fg);
+
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-amber: var(--amber);
+  --color-amber-soft: var(--amber-soft);
+  --color-violet: var(--violet);
+  --color-violet-soft: var(--violet-soft);
+  --color-teal: var(--teal);
+  --color-teal-soft: var(--teal-soft);
+  --color-weekend: var(--weekend);
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --shadow-card: var(--shadow-sm);
+  --shadow-pop: var(--shadow-md);
+  --shadow-modal: var(--shadow-lg);
+}
+
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  background-color: var(--app);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  /* Las cifras alineadas en columna se leen mal si los dígitos bailan de ancho. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Cifras: siempre monoespaciadas y de ancho fijo. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* ---------------------------------------------------------------
+   Accesibilidad
+   --------------------------------------------------------------- */
+
+/* Un anillo de foco visible y consistente: la cuadrícula se navega con teclado. */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.sr-only-focusable:not(:focus) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------
+   Detalles
+   --------------------------------------------------------------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--subtle);
+  background-clip: content-box;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
+}
+
+/* Los selectores nativos heredan el tema en vez de quedarse blancos en oscuro. */
+select option {
+  background: var(--surface);
+  color: var(--fg);
+}
+
+input[type='date'],
+input[type='time'] {
+  color-scheme: inherit;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-in {
+  animation: fade-in-up 0.18s ease-out;
+}

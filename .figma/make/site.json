@@ -1,0 +1,12 @@
+{
+  "title": "Planilla — Nómina y Gestión de Colaboradores",
+  "description": "Cálculo de planilla quincenal para servicios profesionales y empleados regulares: registro de horas, deducciones de ley, comprobantes de pago y reportes.",
+  "language": "es",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
