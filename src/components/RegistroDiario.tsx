@@ -20,8 +20,9 @@ import {
   isWeekend,
   todayISO,
 } from "../utils/dates"
+import { scheduleForDate } from "../utils/schedule"
 import Icon from "./Icon"
-import LlenadoRapido, { applyFill } from "./LlenadoRapido"
+import LlenadoRapido, { applyFill, resolveFillTargets } from "./LlenadoRapido"
 import type { FillOptions } from "./LlenadoRapido"
 import {
   Badge,
@@ -77,22 +78,28 @@ const DAY_TYPE_TONE: Record<DayType, Tone> = {
   ausencia: "danger",
 }
 
+/**
+ * Valores iniciales al abrir una celda vacía.
+ *
+ * Prioridad: el horario habitual del colaborador para ese día de la semana →
+ * el último día que registró → el estándar. Con el horario definido, registrar
+ * un día normal se reduce a un clic y confirmar.
+ */
 function blankEntry(
-  employeeId: string,
+  employee: Employee,
   date: string,
   template?: TimeEntry | null,
 ): TimeEntry {
+  const planned = scheduleForDate(employee, date)
   return {
     id: "",
-    employeeId,
+    employeeId: employee.id,
     date,
     dayType: "trabajo",
-    // Reutiliza el horario del día anterior: en la práctica casi todos los días
-    // de un colaborador son iguales, y así el caso común es un solo clic.
-    entryTime: template?.entryTime || "08:00",
-    exitTime: template?.exitTime || "17:00",
-    lunchBreak: template?.lunchBreak ?? true,
-    lunchDuration: template?.lunchDuration ?? 60,
+    entryTime: planned?.entryTime || template?.entryTime || "08:00",
+    exitTime: planned?.exitTime || template?.exitTime || "17:00",
+    lunchBreak: planned?.lunchBreak ?? template?.lunchBreak ?? true,
+    lunchDuration: planned?.lunchDuration ?? template?.lunchDuration ?? 60,
     overtimeRate: template?.overtimeRate ?? 1.5,
     notes: "",
   }
@@ -175,7 +182,8 @@ export default function RegistroDiario({
   }
 
   function handleFill(opts: FillOptions) {
-    const result = applyFill(entries, dates, opts)
+    const targets = resolveFillTargets(activeEmployees, dates, opts)
+    const result = applyFill(entries, targets, opts)
     onChange(result.entries)
     setFillFor(null)
     const parts = [
@@ -351,7 +359,7 @@ function Legend() {
       ))}
       <span className="flex items-center gap-1.5">
         <span className="w-3 h-3 rounded-sm bg-weekend border border-line" />
-        Fin de semana
+        Día libre según su horario
       </span>
       <span className="flex items-center gap-1.5">
         <span className="text-amber font-bold">+extra</span>
@@ -562,10 +570,13 @@ function GridView({
                     const worked = entry ? calcWorkedHours(entry) : null
                     const isOver =
                       !!worked && worked.total > rules.overtimeThreshold
-                    const weekend = isWeekend(d)
+                    // Un día libre según el horario del colaborador se atenúa
+                    // igual que el fin de semana: así un martes libre por
+                    // horario especial se distingue de un martes sin registrar.
+                    const offDuty = !scheduleForDate(emp, d)
                     const bg = entry
                       ? CELL_BG[entry.dayType]
-                      : weekend
+                      : offDuty
                         ? "bg-weekend"
                         : rowBg
 
@@ -789,6 +800,18 @@ function DayView({
 
 /* ------------------------------------------------------------- Editor */
 
+interface EntryEditorProps {
+  employee: Employee
+  date: string
+  existing: TimeEntry | null
+  previous: TimeEntry | null
+  anchorRect: DOMRect | null
+  rules: PayrollRules
+  onSave: (entry: TimeEntry) => void
+  onDelete: () => void
+  onClose: () => void
+}
+
 function EntryEditor({
   employee,
   date,
@@ -799,20 +822,11 @@ function EntryEditor({
   onSave,
   onDelete,
   onClose,
-}: {
-  employee: Employee
-  date: string
-  existing: TimeEntry | null
-  previous: TimeEntry | null
-  anchorRect: DOMRect | null
-  rules: PayrollRules
-  onSave: (entry: TimeEntry) => void
-  onDelete: () => void
-  onClose: () => void
-}) {
+}: EntryEditorProps) {
   const [form, setForm] = useState<TimeEntry>(
-    existing ?? blankEntry(employee.id, date, previous),
+    existing ?? blankEntry(employee, date, previous),
   )
+  const planned = scheduleForDate(employee, date)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -912,6 +926,39 @@ function EntryEditor({
 
         {schedule ? (
           <>
+            {/* Horario habitual: referencia visible y atajo para volver a él. */}
+            <div className="flex items-center gap-2 mb-3 text-[11px]">
+              <Icon name="clock" className="w-3.5 h-3.5 shrink-0 text-subtle" />
+              {planned ? (
+                <>
+                  <span className="text-muted font-mono">
+                    Habitual {planned.entryTime}–{planned.exitTime}
+                  </span>
+                  {(form.entryTime !== planned.entryTime ||
+                    form.exitTime !== planned.exitTime) && (
+                    <button
+                      onClick={() =>
+                        setForm((f) => ({
+                          ...f,
+                          entryTime: planned.entryTime,
+                          exitTime: planned.exitTime,
+                          lunchBreak: planned.lunchBreak,
+                          lunchDuration: planned.lunchDuration,
+                        }))
+                      }
+                      className="ml-auto font-semibold text-brand hover:underline"
+                    >
+                      Restaurar
+                    </button>
+                  )}
+                </>
+              ) : (
+                <span className="text-muted">
+                  {dayNameLong(date)} es día libre según su horario
+                </span>
+              )}
+            </div>
+
             <div className="grid grid-cols-2 gap-2 mb-3">
               <Field label="Entrada">
                 <input

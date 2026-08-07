@@ -5,10 +5,14 @@ import type {
   Employee,
   PayPeriod,
   TimeEntry,
+  WeeklySchedule,
 } from "./types"
 
 const STORAGE_KEY = "planilla_data"
-const DATA_VERSION = 2
+const DATA_VERSION = 3
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+const TIME_RE = /^\d{2}:\d{2}$/
 
 const now = new Date()
 const currentDay = now.getDate()
@@ -48,6 +52,39 @@ export interface PeriodDates {
   end: string
 }
 
+/** Lunes a viernes de 8 a 5 con una hora de almuerzo; fin de semana libre. */
+export function defaultWeeklySchedule(): WeeklySchedule {
+  return Array.from({ length: 7 }, (_, weekday) => ({
+    works: weekday >= 1 && weekday <= 5,
+    entryTime: "08:00",
+    exitTime: "17:00",
+    lunchBreak: true,
+    lunchDuration: 60,
+  }))
+}
+
+function normalizeSchedule(raw: any): WeeklySchedule {
+  const fallback = defaultWeeklySchedule()
+  if (!Array.isArray(raw)) return fallback
+  // Siempre 7 posiciones: un arreglo corto o largo rompería la búsqueda por día.
+  return fallback.map((base, weekday) => {
+    const day = raw[weekday]
+    if (!day || typeof day !== "object") return base
+    return {
+      works: bool(day.works, base.works),
+      entryTime: TIME_RE.test(str(day.entryTime))
+        ? day.entryTime
+        : base.entryTime,
+      exitTime: TIME_RE.test(str(day.exitTime)) ? day.exitTime : base.exitTime,
+      lunchBreak: bool(day.lunchBreak, base.lunchBreak),
+      lunchDuration: Math.min(
+        600,
+        Math.max(0, num(day.lunchDuration, base.lunchDuration)),
+      ),
+    }
+  })
+}
+
 function num(value: unknown, fallback: number): number {
   const n = typeof value === "number" ? value : parseFloat(String(value))
   return Number.isFinite(n) ? n : fallback
@@ -74,6 +111,8 @@ function normalizeEmployee(raw: any): Employee | null {
     startDate: str(raw.startDate),
     category,
     hourlyRate: Math.max(0, num(raw.hourlyRate, 0)),
+    // Los datos anteriores a la v3 no traían horario: se les asigna el estándar.
+    schedule: normalizeSchedule(raw.schedule),
     socialSecurityRate: Math.max(
       0,
       num(raw.socialSecurityRate, category === "empleado" ? 9.75 : 0),
@@ -85,9 +124,6 @@ function normalizeEmployee(raw: any): Employee | null {
     active: bool(raw.active, true),
   }
 }
-
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
-const TIME_RE = /^\d{2}:\d{2}$/
 
 function normalizeEntry(raw: any, employeeIds: Set<string>): TimeEntry | null {
   if (!raw || typeof raw !== "object") return null

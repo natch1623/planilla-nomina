@@ -57,15 +57,23 @@ export interface WorkedHours {
   invalid: boolean
 }
 
-export function calcWorkedHours(
-  entry: Pick<TimeEntry, "entryTime" | "exitTime" | "lunchBreak" | "lunchDuration" | "dayType">,
+/**
+ * Horas entre dos marcas `HH:MM` descontando el almuerzo.
+ *
+ * Es la única implementación del cálculo de un turno: tanto el registro diario
+ * como el horario semanal del colaborador pasan por aquí, así que el manejo del
+ * turno nocturno no puede divergir entre ambos.
+ */
+export function spanHours(
+  entryTime: string,
+  exitTime: string,
+  lunchMinutes: number,
 ): WorkedHours {
   const empty = { total: 0, crossesMidnight: false, invalid: false }
-  if (!usesSchedule(entry.dayType ?? "trabajo")) return empty
-  if (!entry.entryTime || !entry.exitTime) return empty
+  if (!entryTime || !exitTime) return empty
 
-  const [entryH, entryM] = entry.entryTime.split(":").map(Number)
-  const [exitH, exitM] = entry.exitTime.split(":").map(Number)
+  const [entryH, entryM] = entryTime.split(":").map(Number)
+  const [exitH, exitM] = exitTime.split(":").map(Number)
   if ([entryH, entryM, exitH, exitM].some((n) => !Number.isFinite(n)))
     return empty
 
@@ -77,11 +85,22 @@ export function calcWorkedHours(
   const crossesMidnight = exitMins <= entryMins
   if (crossesMidnight) exitMins += 24 * 60
 
-  const lunch = entry.lunchBreak ? entry.lunchDuration : 0
-  const worked = (exitMins - entryMins - lunch) / 60
-
+  const worked = (exitMins - entryMins - lunchMinutes) / 60
   if (worked <= 0) return { total: 0, crossesMidnight, invalid: true }
   return { total: worked, crossesMidnight, invalid: false }
+}
+
+export function calcWorkedHours(
+  entry: Pick<TimeEntry, "entryTime" | "exitTime" | "lunchBreak" | "lunchDuration" | "dayType">,
+): WorkedHours {
+  if (!usesSchedule(entry.dayType ?? "trabajo")) {
+    return { total: 0, crossesMidnight: false, invalid: false }
+  }
+  return spanHours(
+    entry.entryTime,
+    entry.exitTime,
+    entry.lunchBreak ? entry.lunchDuration : 0,
+  )
 }
 
 export interface HourSplit {

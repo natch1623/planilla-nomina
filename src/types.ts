@@ -3,6 +3,22 @@ export type EmployeeCategory = "profesional" | "empleado"
 /** Qué ocurrió en un día del período. `trabajo` usa entrada/salida; el resto son días completos. */
 export type DayType = "trabajo" | "feriado" | "vacaciones" | "incapacidad" | "ausencia"
 
+/** El horario habitual de un colaborador para un día de la semana. */
+export interface DaySchedule {
+  works: boolean // false = día libre
+  entryTime: string // HH:MM
+  exitTime: string // HH:MM
+  lunchBreak: boolean
+  lunchDuration: number // minutos
+}
+
+/**
+ * Horario semanal: siempre 7 posiciones, indexadas igual que `Date.getDay()`
+ * (0 = domingo … 6 = sábado), para poder buscar el día directamente sin
+ * traducir índices en cada llamada.
+ */
+export type WeeklySchedule = DaySchedule[]
+
 export interface Employee {
   id: string
   name: string
@@ -11,6 +27,7 @@ export interface Employee {
   startDate: string // fecha de ingreso, YYYY-MM-DD ('' si no se registró)
   category: EmployeeCategory
   hourlyRate: number
+  schedule: WeeklySchedule // horario habitual, usado para prellenar el registro
   // Deductions (only for empleados, but customizable)
   socialSecurityRate: number // default 9.75 for empleados, 0 for profesionales
   educationRate: number // default 1.25 for empleados, 0 for profesionales

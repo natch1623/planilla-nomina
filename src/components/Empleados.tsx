@@ -1,7 +1,14 @@
 import { useMemo, useState } from "react"
-import type { Employee, EmployeeCategory } from "../types"
-import { initials } from "../utils/calculations"
+import type { Employee, EmployeeCategory, WeeklySchedule } from "../types"
+import { defaultWeeklySchedule } from "../store"
+import { fmtHours, initials } from "../utils/calculations"
 import { formatDate } from "../utils/dates"
+import {
+  describeSchedule,
+  weeklyHours,
+  workingDaysCount,
+} from "../utils/schedule"
+import HorarioSemanal from "./HorarioSemanal"
 import Icon from "./Icon"
 import {
   Badge,
@@ -26,6 +33,7 @@ interface Props {
 }
 
 type Draft = Omit<Employee, "id">
+type FormTab = "datos" | "horario"
 
 const emptyEmployee = (): Draft => ({
   name: "",
@@ -34,17 +42,20 @@ const emptyEmployee = (): Draft => ({
   startDate: "",
   category: "empleado",
   hourlyRate: 0,
+  schedule: defaultWeeklySchedule(),
   socialSecurityRate: 9.75,
   educationRate: 1.25,
   active: true,
 })
 
-const GROUPS: {
+interface GroupDef {
   category: EmployeeCategory
   label: string
   tone: Tone
   avatar: string
-}[] = [
+}
+
+const GROUPS: GroupDef[] = [
   {
     category: "profesional",
     label: "Servicio profesional",
@@ -63,6 +74,7 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
   const [editing, setEditing] = useState<Employee | null>(null)
   const [form, setForm] = useState<Draft>(emptyEmployee())
   const [showForm, setShowForm] = useState(false)
+  const [tab, setTab] = useState<FormTab>("datos")
   const [query, setQuery] = useState("")
   const [pendingDelete, setPendingDelete] = useState<Employee | null>(null)
 
@@ -80,13 +92,15 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
   function openNew() {
     setEditing(null)
     setForm(emptyEmployee())
+    setTab("datos")
     setShowForm(true)
   }
 
-  function openEdit(emp: Employee) {
+  function openEdit(emp: Employee, startTab: FormTab = "datos") {
     setEditing(emp)
     const { id: _id, ...rest } = emp
     setForm(rest)
+    setTab(startTab)
     setShowForm(true)
   }
 
@@ -99,8 +113,21 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
     }))
   }
 
+  function setSchedule(schedule: WeeklySchedule) {
+    setForm((f) => ({ ...f, schedule }))
+  }
+
+  const nameOk = form.name.trim().length > 0
+  const rateOk = form.hourlyRate > 0
+  const canSave = nameOk && rateOk
+
   function handleSave() {
-    if (!form.name.trim() || form.hourlyRate <= 0) return
+    if (!canSave) {
+      // Los campos obligatorios viven en la primera pestaña: llevar al usuario
+      // allí evita un botón deshabilitado sin explicación visible.
+      setTab("datos")
+      return
+    }
     if (editing) {
       onChange(
         employees.map((e) => (e.id === editing.id ? { ...e, ...form } : e)),
@@ -195,77 +222,14 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
               ) : (
                 <div className="grid gap-2.5 md:grid-cols-2">
                   {list.map((emp) => (
-                    <Card
+                    <EmployeeCard
                       key={emp.id}
-                      padded={false}
-                      className={`p-3.5 flex items-center gap-3 ${
-                        emp.active ? "" : "opacity-55"
-                      }`}
-                    >
-                      <span
-                        className={`w-10 h-10 rounded-full shrink-0 grid place-items-center text-white font-bold text-sm ${avatar}`}
-                      >
-                        {initials(emp.name)}
-                      </span>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-fg truncate">
-                            {emp.name}
-                          </span>
-                          {!emp.active && <Badge tone="muted">Inactivo</Badge>}
-                        </div>
-                        <div className="text-xs text-muted truncate">
-                          {emp.position || "Sin cargo"}
-                          {emp.idNumber && (
-                            <span className="font-mono"> · {emp.idNumber}</span>
-                          )}
-                        </div>
-                        <div className="text-xs mt-1 flex items-center gap-2 flex-wrap">
-                          <span className="font-mono font-semibold text-fg">
-                            ${emp.hourlyRate.toFixed(2)}/h
-                          </span>
-                          {emp.category === "empleado" && (
-                            <span className="font-mono text-danger">
-                              −
-                              {(
-                                emp.socialSecurityRate + emp.educationRate
-                              ).toFixed(2)}
-                              %
-                            </span>
-                          )}
-                          {emp.startDate && (
-                            <span className="text-subtle">
-                              desde {formatDate(emp.startDate)}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center shrink-0">
-                        <IconButton
-                          icon={emp.active ? "eye" : "eyeOff"}
-                          label={
-                            emp.active
-                              ? `Desactivar a ${emp.name}`
-                              : `Activar a ${emp.name}`
-                          }
-                          onClick={() => toggleActive(emp)}
-                        />
-                        <IconButton
-                          icon="edit"
-                          tone="brand"
-                          label={`Editar a ${emp.name}`}
-                          onClick={() => openEdit(emp)}
-                        />
-                        <IconButton
-                          icon="trash"
-                          tone="danger"
-                          label={`Eliminar a ${emp.name}`}
-                          onClick={() => setPendingDelete(emp)}
-                        />
-                      </div>
-                    </Card>
+                      employee={emp}
+                      avatar={avatar}
+                      onEdit={openEdit}
+                      onToggleActive={toggleActive}
+                      onDelete={setPendingDelete}
+                    />
                   ))}
                 </div>
               )}
@@ -277,8 +241,13 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
       {showForm && (
         <Modal
           title={editing ? "Editar colaborador" : "Nuevo colaborador"}
-          subtitle="Los datos de identificación aparecen en el comprobante de pago"
+          subtitle={
+            editing
+              ? editing.name
+              : "Define sus datos y su horario habitual de trabajo"
+          }
           onClose={() => setShowForm(false)}
+          width="max-w-2xl"
           footer={
             <>
               <Button className="flex-1" onClick={() => setShowForm(false)}>
@@ -287,143 +256,52 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
               <Button
                 variant="primary"
                 className="flex-1"
-                disabled={!form.name.trim() || form.hourlyRate <= 0}
+                disabled={!canSave}
                 onClick={handleSave}
               >
-                {editing ? "Guardar cambios" : "Agregar"}
+                {editing ? "Guardar cambios" : "Agregar colaborador"}
               </Button>
             </>
           }
         >
-          <div className="space-y-4">
-            <Field label="Nombre completo">
-              <input
-                value={form.name}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, name: e.target.value }))
-                }
-                placeholder="Ej. María González"
-                autoFocus
-                className={inputClass}
+          <div className="space-y-5">
+            <Segmented
+              value={tab}
+              onChange={setTab}
+              options={[
+                { value: "datos" as FormTab, label: "Datos y pago" },
+                {
+                  value: "horario" as FormTab,
+                  label: `Horario · ${fmtHours(weeklyHours(form.schedule))}`,
+                },
+              ]}
+            />
+
+            {tab === "datos" ? (
+              <DatosTab
+                form={form}
+                setForm={setForm}
+                setCategory={setCategory}
               />
-            </Field>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Cédula o pasaporte">
-                <input
-                  value={form.idNumber}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, idNumber: e.target.value }))
-                  }
-                  placeholder="8-123-4567"
-                  className={inputNumClass}
-                />
-              </Field>
-              <Field label="Fecha de ingreso">
-                <input
-                  type="date"
-                  value={form.startDate}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, startDate: e.target.value }))
-                  }
-                  className={inputNumClass}
-                />
-              </Field>
-            </div>
-
-            <Field label="Cargo">
-              <input
-                value={form.position}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, position: e.target.value }))
-                }
-                placeholder="Ej. Asistente administrativa"
-                className={inputClass}
-              />
-            </Field>
-
-            <Field label="Categoría">
-              <Segmented
-                value={form.category}
-                onChange={setCategory}
-                options={[
-                  {
-                    value: "profesional" as EmployeeCategory,
-                    label: "Serv. profesional",
-                  },
-                  {
-                    value: "empleado" as EmployeeCategory,
-                    label: "Empleado regular",
-                  },
-                ]}
-              />
-            </Field>
-
-            <Field label="Salario por hora (USD)">
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.hourlyRate || ""}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    hourlyRate: parseFloat(e.target.value) || 0,
-                  }))
-                }
-                placeholder="0.00"
-                className={inputNumClass}
-              />
-            </Field>
-
-            {form.category === "empleado" ? (
-              <div className="bg-amber-soft border border-line rounded-2xl p-4 space-y-3">
-                <p className="text-xs font-bold text-amber uppercase tracking-wide">
-                  Descuentos sobre el salario base
-                </p>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Seguro social (%)">
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="0.01"
-                      value={form.socialSecurityRate}
-                      onChange={(e) =>
-                        setForm((f) => ({
-                          ...f,
-                          socialSecurityRate: parseFloat(e.target.value) || 0,
-                        }))
-                      }
-                      className={inputNumClass}
-                    />
-                  </Field>
-                  <Field label="Seguro educativo (%)">
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="0.01"
-                      value={form.educationRate}
-                      onChange={(e) =>
-                        setForm((f) => ({
-                          ...f,
-                          educationRate: parseFloat(e.target.value) || 0,
-                        }))
-                      }
-                      className={inputNumClass}
-                    />
-                  </Field>
-                </div>
-                <p className="text-[11px] text-amber">
-                  Los descuentos se aplican al salario base y a los días
-                  pagados, no a los recargos de horas extra ni de feriado.
-                </p>
-              </div>
             ) : (
-              <p className="bg-violet-soft border border-line rounded-2xl p-3 text-xs text-violet">
-                <strong>Sin descuentos</strong> de seguro social ni educativo
-                para servicios profesionales.
+              <div className="space-y-3">
+                <p className="text-xs text-muted">
+                  Este horario se usa para prellenar el registro diario y para
+                  el llenado rápido. Siempre puedes ajustar un día concreto
+                  desde el registro.
+                </p>
+                <HorarioSemanal
+                  schedule={form.schedule}
+                  onChange={setSchedule}
+                />
+              </div>
+            )}
+
+            {!canSave && (
+              <p className="flex items-center gap-2 text-[11px] text-amber">
+                <Icon name="alert" className="w-3.5 h-3.5 shrink-0" />
+                Falta {!nameOk ? "el nombre" : "el salario por hora"} en la
+                pestaña «Datos y pago».
               </p>
             )}
           </div>
@@ -445,6 +323,258 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
           onConfirm={confirmDelete}
           onCancel={() => setPendingDelete(null)}
         />
+      )}
+    </div>
+  )
+}
+
+/* --------------------------------------------------------------- Tarjeta */
+
+interface EmployeeCardProps {
+  employee: Employee
+  avatar: string
+  onEdit: (emp: Employee, tab?: FormTab) => void
+  onToggleActive: (emp: Employee) => void
+  onDelete: (emp: Employee) => void
+}
+
+function EmployeeCard({
+  employee,
+  avatar,
+  onEdit,
+  onToggleActive,
+  onDelete,
+}: EmployeeCardProps) {
+  const hours = weeklyHours(employee.schedule)
+  const days = workingDaysCount(employee.schedule)
+
+  return (
+    <Card
+      padded={false}
+      className={`p-3.5 ${employee.active ? "" : "opacity-55"}`}
+    >
+      <div className="flex items-center gap-3">
+        <span
+          className={`w-10 h-10 rounded-full shrink-0 grid place-items-center text-white font-bold text-sm ${avatar}`}
+        >
+          {initials(employee.name)}
+        </span>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-fg truncate">
+              {employee.name}
+            </span>
+            {!employee.active && <Badge tone="muted">Inactivo</Badge>}
+          </div>
+          <div className="text-xs text-muted truncate">
+            {employee.position || "Sin cargo"}
+            {employee.idNumber && (
+              <span className="font-mono"> · {employee.idNumber}</span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center shrink-0">
+          <IconButton
+            icon={employee.active ? "eye" : "eyeOff"}
+            label={
+              employee.active
+                ? `Desactivar a ${employee.name}`
+                : `Activar a ${employee.name}`
+            }
+            onClick={() => onToggleActive(employee)}
+          />
+          <IconButton
+            icon="edit"
+            tone="brand"
+            label={`Editar a ${employee.name}`}
+            onClick={() => onEdit(employee)}
+          />
+          <IconButton
+            icon="trash"
+            tone="danger"
+            label={`Eliminar a ${employee.name}`}
+            onClick={() => onDelete(employee)}
+          />
+        </div>
+      </div>
+
+      {/* Pago y horario: los dos datos que se consultan a diario */}
+      <div className="flex items-center gap-2 flex-wrap mt-3 pt-3 border-t border-line text-xs">
+        <span className="font-mono font-bold text-fg">
+          ${employee.hourlyRate.toFixed(2)}/h
+        </span>
+        {employee.category === "empleado" && (
+          <span className="font-mono text-danger">
+            −{(employee.socialSecurityRate + employee.educationRate).toFixed(2)}
+            %
+          </span>
+        )}
+        {employee.startDate && (
+          <span className="text-subtle">
+            desde {formatDate(employee.startDate)}
+          </span>
+        )}
+
+        <button
+          type="button"
+          onClick={() => onEdit(employee, "horario")}
+          title={`Editar el horario de ${employee.name}`}
+          className="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-lg text-muted hover:text-brand hover:bg-brand-soft max-w-full"
+        >
+          <Icon name="clock" className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">
+            {describeSchedule(employee.schedule)}
+          </span>
+          <span className="font-mono font-semibold shrink-0">
+            · {fmtHours(hours)}/{days}d
+          </span>
+        </button>
+      </div>
+    </Card>
+  )
+}
+
+/* ------------------------------------------------------------ Pestaña 1 */
+
+interface DatosTabProps {
+  form: Draft
+  setForm: React.Dispatch<React.SetStateAction<Draft>>
+  setCategory: (c: EmployeeCategory) => void
+}
+
+function DatosTab({ form, setForm, setCategory }: DatosTabProps) {
+  return (
+    <div className="space-y-4">
+      <div className="grid sm:grid-cols-2 gap-4">
+        <Field label="Nombre completo" className="sm:col-span-2">
+          <input
+            value={form.name}
+            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+            placeholder="Ej. María González"
+            autoFocus
+            className={inputClass}
+          />
+        </Field>
+
+        <Field label="Cédula o pasaporte">
+          <input
+            value={form.idNumber}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, idNumber: e.target.value }))
+            }
+            placeholder="8-123-4567"
+            className={inputNumClass}
+          />
+        </Field>
+
+        <Field label="Fecha de ingreso">
+          <input
+            type="date"
+            value={form.startDate}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, startDate: e.target.value }))
+            }
+            className={inputNumClass}
+          />
+        </Field>
+
+        <Field label="Cargo" className="sm:col-span-2">
+          <input
+            value={form.position}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, position: e.target.value }))
+            }
+            placeholder="Ej. Asistente administrativa"
+            className={inputClass}
+          />
+        </Field>
+
+        <Field label="Categoría">
+          <Segmented
+            value={form.category}
+            onChange={setCategory}
+            options={[
+              {
+                value: "profesional" as EmployeeCategory,
+                label: "Serv. profesional",
+              },
+              {
+                value: "empleado" as EmployeeCategory,
+                label: "Empleado regular",
+              },
+            ]}
+          />
+        </Field>
+
+        <Field label="Salario por hora (USD)">
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.hourlyRate || ""}
+            onChange={(e) =>
+              setForm((f) => ({
+                ...f,
+                hourlyRate: parseFloat(e.target.value) || 0,
+              }))
+            }
+            placeholder="0.00"
+            className={inputNumClass}
+          />
+        </Field>
+      </div>
+
+      {form.category === "empleado" ? (
+        <div className="bg-amber-soft border border-line rounded-2xl p-4 space-y-3">
+          <p className="text-xs font-bold text-amber uppercase tracking-wide">
+            Descuentos sobre el salario base
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Seguro social (%)">
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={form.socialSecurityRate}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    socialSecurityRate: parseFloat(e.target.value) || 0,
+                  }))
+                }
+                className={inputNumClass}
+              />
+            </Field>
+            <Field label="Seguro educativo (%)">
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={form.educationRate}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    educationRate: parseFloat(e.target.value) || 0,
+                  }))
+                }
+                className={inputNumClass}
+              />
+            </Field>
+          </div>
+          <p className="text-[11px] text-amber">
+            Los descuentos se aplican al salario base y a los días pagados, no a
+            los recargos de horas extra ni de feriado.
+          </p>
+        </div>
+      ) : (
+        <p className="bg-violet-soft border border-line rounded-2xl p-3 text-xs text-violet">
+          <strong>Sin descuentos</strong> de seguro social ni educativo para
+          servicios profesionales.
+        </p>
       )}
     </div>
   )
