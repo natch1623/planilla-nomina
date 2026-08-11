@@ -165,7 +165,11 @@ export default function Dashboard({
           label="Descuentos"
           value={`−$${fmt(totals.deductions)}`}
           tone="danger"
-          sub={`SS $${fmt(totals.socialSecurity)} · Ed $${fmt(totals.education)}`}
+          sub={
+            totals.loans > 0
+              ? `SS $${fmt(totals.socialSecurity)} · Ed $${fmt(totals.education)} · Prést. $${fmt(totals.loans)}`
+              : `SS $${fmt(totals.socialSecurity)} · Ed $${fmt(totals.education)}`
+          }
         />
         <Kpi
           label="Horas totales"

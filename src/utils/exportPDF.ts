@@ -85,13 +85,16 @@ export function exportToPDF(
     String(s.daysWorked),
     fmtHours(s.regularHours),
     s.overtimeHours > 0 ? fmtHours(s.overtimeHours) : "—",
-    `$${fmt(s.employee.hourlyRate)}`,
+    s.employee.paymentType === "daily"
+      ? `$${fmt(s.employee.dailyRate)}/d`
+      : `$${fmt(s.employee.hourlyRate)}/h`,
     `$${fmt(s.regularPay)}`,
     s.overtimePay > 0 ? `$${fmt(s.overtimePay)}` : "—",
     s.holidayPay > 0 ? `$${fmt(s.holidayPay)}` : "—",
     `$${fmt(s.grossSalary)}`,
     s.socialSecurityDeduction > 0 ? `$${fmt(s.socialSecurityDeduction)}` : "—",
     s.educationDeduction > 0 ? `$${fmt(s.educationDeduction)}` : "—",
+    s.loanDeduction > 0 ? `$${fmt(s.loanDeduction)}` : "—",
     `$${fmt(s.netSalary)}`,
   ])
 
@@ -112,6 +115,7 @@ export function exportToPDF(
         "Bruto",
         "Seg. social",
         "Educativo",
+        "Préstamo",
         "NETO",
       ],
     ],
@@ -131,6 +135,7 @@ export function exportToPDF(
         `$${fmt(totals.gross)}`,
         `$${fmt(totals.socialSecurity)}`,
         `$${fmt(totals.education)}`,
+        `$${fmt(totals.loans)}`,
         `$${fmt(totals.net)}`,
       ],
     ],
@@ -152,12 +157,12 @@ export function exportToPDF(
     },
     alternateRowStyles: { fillColor: STRIPE },
     columnStyles: {
-      0: { cellWidth: 42, halign: "left" },
-      1: { cellWidth: 20, halign: "left" },
-      2: { cellWidth: 18, halign: "left" },
+      0: { cellWidth: 38, halign: "left" },
+      1: { cellWidth: 19, halign: "left" },
+      2: { cellWidth: 17, halign: "left" },
       8: { textColor: AMBER },
       10: { fontStyle: "bold" },
-      13: { fontStyle: "bold", textColor: GREEN },
+      14: { fontStyle: "bold", textColor: GREEN },
     },
     margin: { left: M, right: M, top: 14 },
     // La cabecera azul solo se dibuja en la primera página; en las siguientes la

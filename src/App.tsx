@@ -12,15 +12,20 @@ import { calcPeriodSummaries, rulesFrom } from "./utils/calculations"
 import { exportToExcel } from "./utils/exportExcel"
 import { exportToPDF } from "./utils/exportPDF"
 import { exportAllPayslips } from "./utils/exportPayslip"
+import {
+  exportFinancialReportPDF,
+  exportFinancialWorkbook,
+} from "./utils/exportFinanzas"
 import Dashboard from "./components/Dashboard"
 import Empleados from "./components/Empleados"
 import RegistroDiario from "./components/RegistroDiario"
+import Contabilidad from "./components/Contabilidad"
 import Configuracion from "./components/Configuracion"
 import Icon from "./components/Icon"
 import type { IconName } from "./components/Icon"
 import { Segmented, ToastStack, useToasts } from "./components/ui"
 
-type Tab = "dashboard" | "empleados" | "registro" | "config"
+type Tab = "dashboard" | "empleados" | "registro" | "contabilidad" | "config"
 
 interface TabDef {
   id: Tab
@@ -38,6 +43,12 @@ const TABS: TabDef[] = [
     short: "Registro",
     icon: "calendar",
   },
+  {
+    id: "contabilidad",
+    label: "Contabilidad",
+    short: "Cuentas",
+    icon: "receipt",
+  },
   { id: "config", label: "Configuración", short: "Ajustes", icon: "settings" },
 ]
 
@@ -53,9 +64,18 @@ export default function App() {
   const firstRender = useRef(true)
 
   useEffect(() => {
-    saveData(data)
+    const ok = saveData(data)
     if (firstRender.current) {
       firstRender.current = false
+      return
+    }
+    if (!ok) {
+      // Casi siempre es la cuota llena por comprobantes adjuntos. Callarlo
+      // dejaría al usuario trabajando sobre cambios que no se guardaron.
+      push(
+        "No se pudo guardar: almacenamiento lleno. Elimina adjuntos o exporta un respaldo.",
+        "danger",
+      )
       return
     }
     setSavedFlash(true)
@@ -90,8 +110,9 @@ export default function App() {
         data.timeEntries,
         data.currentPeriod,
         rules,
+        data.loans,
       ),
-    [data.employees, data.timeEntries, data.currentPeriod, rules],
+    [data.employees, data.timeEntries, data.currentPeriod, rules, data.loans],
   )
 
   // Una quincena cerrada muestra su foto congelada: cambiar una tarifa hoy
@@ -104,8 +125,24 @@ export default function App() {
 
   const { start, end } = getPeriodDates(data.currentPeriod)
 
-  function runExport(kind: "excel" | "pdf" | "payslips") {
+  type ExportKind = "excel" | "pdf" | "payslips" | "finanzas-pdf" | "finanzas-excel"
+
+  function runExport(kind: ExportKind) {
     setExportMenu(false)
+
+    // Los reportes financieros no dependen de la planilla del período: viven
+    // de los movimientos, así que no se bloquean cuando la quincena va vacía.
+    if (kind === "finanzas-pdf") {
+      exportFinancialReportPDF(data, rules)
+      push("Estado financiero descargado")
+      return
+    }
+    if (kind === "finanzas-excel") {
+      exportFinancialWorkbook(data, rules)
+      push("Libro financiero descargado")
+      return
+    }
+
     if (summaries.length === 0) {
       push("No hay datos que exportar en este período", "amber")
       return
@@ -217,6 +254,23 @@ export default function App() {
                         desc="Un desprendible por colaborador"
                         onClick={() => runExport("payslips")}
                       />
+                      <div className="px-4 py-1.5 bg-raised">
+                        <span className="text-[10px] font-bold text-subtle uppercase tracking-widest">
+                          Finanzas
+                        </span>
+                      </div>
+                      <ExportItem
+                        icon="wallet"
+                        title="PDF — Estado financiero"
+                        desc="Caja, resultado, salud y proyección"
+                        onClick={() => runExport("finanzas-pdf")}
+                      />
+                      <ExportItem
+                        icon="grid"
+                        title="Excel — Libro financiero"
+                        desc="Movimientos, historial, presupuestos y más"
+                        onClick={() => runExport("finanzas-excel")}
+                      />
                     </div>
                   </>
                 )}
@@ -291,8 +345,17 @@ export default function App() {
             entries={data.timeEntries}
             period={data.currentPeriod}
             rules={rules}
+            loans={data.loans}
             readOnly={!!closed}
             onChange={(timeEntries) => setData((d) => ({ ...d, timeEntries }))}
+            onNotify={push}
+          />
+        )}
+        {tab === "contabilidad" && (
+          <Contabilidad
+            data={data}
+            rules={rules}
+            onChange={(patch) => setData((d) => ({ ...d, ...patch }))}
             onNotify={push}
           />
         )}

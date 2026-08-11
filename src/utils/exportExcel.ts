@@ -22,7 +22,13 @@ function row(
         s.employee.category === "profesional"
           ? "Serv. profesional"
           : "Empleado",
-      "Tarifa/hora": round(s.employee.hourlyRate),
+      "Método de pago":
+        s.employee.paymentType === "daily" ? "Por día" : "Por hora",
+      Tarifa: round(
+        s.employee.paymentType === "daily"
+          ? s.employee.dailyRate
+          : s.employee.hourlyRate,
+      ),
       "Días trabajados": s.daysWorked,
       "Días vacaciones": s.dayCounts.vacaciones,
       "Días incapacidad": s.dayCounts.incapacidad,
@@ -37,6 +43,7 @@ function row(
       "Salario bruto": round(s.grossSalary),
       "Seg. social (-)": round(s.socialSecurityDeduction),
       "Seg. educativo (-)": round(s.educationDeduction),
+      "Préstamo (-)": round(s.loanDeduction),
       "Total descuentos": round(s.totalDeductions),
       "Salario neto": round(s.netSalary),
     }
@@ -48,7 +55,8 @@ function row(
     Cédula: "",
     Cargo: "",
     Categoría: "",
-    "Tarifa/hora": "",
+    "Método de pago": "",
+    Tarifa: "",
     "Días trabajados": t.days,
     "Días vacaciones": "",
     "Días incapacidad": "",
@@ -63,6 +71,7 @@ function row(
     "Salario bruto": round(t.gross),
     "Seg. social (-)": round(t.socialSecurity),
     "Seg. educativo (-)": round(t.education),
+    "Préstamo (-)": round(t.loans),
     "Total descuentos": round(t.deductions),
     "Salario neto": round(t.net),
   }
@@ -86,6 +95,7 @@ export function exportToExcel(
     { wch: 14 },
     { wch: 22 },
     { wch: 17 },
+    { wch: 14 },
     { wch: 11 },
     { wch: 15 },
     { wch: 15 },
@@ -98,6 +108,7 @@ export function exportToExcel(
     { wch: 22 },
     { wch: 18 },
     { wch: 15 },
+    { wch: 14 },
     { wch: 14 },
     { wch: 14 },
     { wch: 16 },

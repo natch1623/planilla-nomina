@@ -84,7 +84,9 @@ function drawPayslip(
         ? "Servicio profesional"
         : "Empleado regular",
     ],
-    ["Tarifa por hora", `$${fmt(emp.hourlyRate)}`],
+    emp.paymentType === "daily"
+      ? ["Tarifa por día", `$${fmt(emp.dailyRate)}`]
+      : ["Tarifa por hora", `$${fmt(emp.hourlyRate)}`],
     ["Ingreso", emp.startDate ? formatDate(emp.startDate) : "—"],
     ["Días trabajados", String(s.daysWorked)],
   ]
@@ -165,6 +167,12 @@ function drawPayslip(
     deductions.push([
       `Seguro educativo (${emp.educationRate}% del salario base)`,
       `$${fmt(s.educationDeduction)}`,
+    ])
+  }
+  if (s.loanDeduction > 0) {
+    deductions.push([
+      "Cuota de préstamo o adelanto",
+      `$${fmt(s.loanDeduction)}`,
     ])
   }
   if (deductions.length === 0)

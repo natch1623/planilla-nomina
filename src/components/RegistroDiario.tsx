@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import type { DayType, Employee, PayPeriod, TimeEntry } from "../types"
+import type { DayType, Employee, Loan, PayPeriod, TimeEntry } from "../types"
 import { getPeriodDates } from "../store"
+import { loanDeductionFor } from "../utils/loans"
 import type { PayrollRules } from "../utils/calculations"
 import {
   DAY_TYPE_META,
   DAY_TYPES,
+  calcEmployeeSummary,
   calcWorkedHours,
+  fmt,
   fmtHours,
   initials,
   splitHours,
@@ -41,6 +44,7 @@ interface RowTotals {
   days: number
   hours: number
   overtime: number
+  pay: number
 }
 
 interface Props {
@@ -48,6 +52,7 @@ interface Props {
   entries: TimeEntry[]
   period: PayPeriod
   rules: PayrollRules
+  loans: Loan[]
   readOnly: boolean
   onChange: (entries: TimeEntry[]) => void
   onNotify: (text: string, tone?: Tone) => void
@@ -110,6 +115,7 @@ export default function RegistroDiario({
   entries,
   period,
   rules,
+  loans,
   readOnly,
   onChange,
   onNotify,
@@ -204,30 +210,32 @@ export default function RegistroDiario({
     onNotify("Fila vaciada", "amber")
   }
 
+  const periodEntries = useMemo(
+    () => entries.filter((e) => e.date >= start && e.date <= end),
+    [entries, start, end],
+  )
+
+  // El pago se calcula con la misma función que usa la planilla real, así el
+  // total que se ve aquí mientras se registra nunca puede divergir del que
+  // sale en el Dashboard para el mismo período.
   const totalsFor = useMemo(() => {
-    const map = new Map<string, {
-      days: number
-      hours: number
-      overtime: number
-    }>()
+    const map = new Map<string, RowTotals>()
     for (const emp of activeEmployees) {
-      let days = 0
-      let hours = 0
-      let overtime = 0
-      for (const d of dates) {
-        const e = getEntry(emp.id, d)
-        if (!e) continue
-        const { total } = calcWorkedHours(e)
-        if (total > 0) {
-          days += 1
-          hours += total
-          overtime += splitHours(total, rules.overtimeThreshold).overtime
-        }
-      }
-      map.set(emp.id, { days, hours, overtime })
+      const summary = calcEmployeeSummary(
+        emp,
+        periodEntries,
+        rules,
+        loanDeductionFor(emp.id, period, loans),
+      )
+      map.set(emp.id, {
+        days: summary.daysWorked,
+        hours: summary.regularHours + summary.overtimeHours,
+        overtime: summary.overtimeHours,
+        pay: summary.netSalary,
+      })
     }
     return map
-  }, [activeEmployees, dates, entryMap, rules.overtimeThreshold])
+  }, [activeEmployees, periodEntries, rules, period, loans])
 
   if (activeEmployees.length === 0) {
     return (
@@ -489,7 +497,7 @@ function GridView({
               ))}
               <th
                 scope="col"
-                className="sticky right-0 z-20 bg-nav-raised px-3 py-2 text-center min-w-[104px] border-l border-nav-line"
+                className="sticky right-0 z-20 bg-nav-raised px-3 py-2 text-center min-w-[116px] border-l border-nav-line"
               >
                 <span className="text-[10px] font-bold text-nav-muted uppercase tracking-widest">
                   Total
@@ -523,7 +531,9 @@ function GridView({
                 days: 0,
                 hours: 0,
                 overtime: 0,
+                pay: 0,
               }
+              const isDaily = emp.paymentType === "daily"
               const rowBg = ri % 2 === 1 ? "bg-raised" : "bg-surface"
               return (
                 <tr key={emp.id} className="border-b border-line group/row">
@@ -599,7 +609,7 @@ function GridView({
                           }`}
                           className="w-full h-full px-0 py-1.5 block cursor-pointer disabled:cursor-default hover:ring-2 hover:ring-inset hover:ring-brand focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand"
                         >
-                          {entry && usesSchedule(entry.dayType) ? (
+                          {entry && usesSchedule(entry.dayType) && !isDaily ? (
                             <span className="grid grid-cols-2">
                               <span className="text-center text-[11px] font-mono font-semibold text-ok border-r border-line">
                                 {entry.entryTime}
@@ -609,6 +619,9 @@ function GridView({
                               </span>
                             </span>
                           ) : entry ? (
+                            // Colaborador por día (o tipo de día sin horario):
+                            // un recuadro con la etiqueta, igual que ausencia,
+                            // vacaciones, etc. — no hay horas que mostrar.
                             <span
                               className={`block text-[10px] font-bold ${CELL_FG[entry.dayType]}`}
                             >
@@ -622,36 +635,58 @@ function GridView({
                               <span className="text-center">—</span>
                             </span>
                           )}
-                          <span className="block text-[9px] font-bold h-3 leading-3 mt-0.5">
-                            {isOver && (
-                              <span className="text-amber">+extra</span>
-                            )}
-                            {worked?.crossesMidnight && (
-                              <span className="text-violet ml-1">↷</span>
-                            )}
-                          </span>
+                          {!isDaily && (
+                            <span className="block text-[9px] font-bold h-3 leading-3 mt-0.5">
+                              {isOver && (
+                                <span className="text-amber">+extra</span>
+                              )}
+                              {worked?.crossesMidnight && (
+                                <span className="text-violet ml-1">↷</span>
+                              )}
+                            </span>
+                          )}
                         </button>
                       </td>
                     )
                   })}
 
                   <td className="sticky right-0 z-10 px-3 py-2 text-center border-l border-line bg-sunken">
-                    <div className="text-xs font-mono font-bold text-fg">
-                      {totals.hours > 0 ? (
-                        fmtHours(totals.hours)
-                      ) : (
-                        <span className="text-subtle">—</span>
-                      )}
-                    </div>
-                    <div className="text-[10px] text-muted">
-                      {totals.days > 0 ? `${totals.days} d` : "—"}
-                      {totals.overtime > 0 && (
-                        <span className="text-amber font-bold">
-                          {" "}
-                          · {fmtHours(totals.overtime)} ex
-                        </span>
-                      )}
-                    </div>
+                    {isDaily ? (
+                      <>
+                        <div className="text-xs font-mono font-bold text-fg">
+                          {totals.days > 0 ? (
+                            `${totals.days} d`
+                          ) : (
+                            <span className="text-subtle">—</span>
+                          )}
+                        </div>
+                        <div className="text-[10px] font-mono font-bold text-ok">
+                          {totals.pay > 0 ? `$${fmt(totals.pay)}` : "—"}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-xs font-mono font-bold text-fg">
+                          {totals.hours > 0 ? (
+                            fmtHours(totals.hours)
+                          ) : (
+                            <span className="text-subtle">—</span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-muted">
+                          {totals.days > 0 ? `${totals.days} d` : "—"}
+                          {totals.overtime > 0 && (
+                            <span className="text-amber font-bold">
+                              {" "}
+                              · {fmtHours(totals.overtime)} ex
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] font-mono font-bold text-ok">
+                          {totals.pay > 0 ? `$${fmt(totals.pay)}` : "—"}
+                        </div>
+                      </>
+                    )}
                   </td>
                 </tr>
               )
@@ -734,7 +769,8 @@ function DayView({
         <ul>
           {employees.map((emp) => {
             const entry = getEntry(emp.id, selectedDate)
-            const worked = entry ? calcWorkedHours(entry) : null
+            const isDaily = emp.paymentType === "daily"
+            const worked = entry && !isDaily ? calcWorkedHours(entry) : null
             const isOver = !!worked && worked.total > rules.overtimeThreshold
             return (
               <li key={emp.id} className="border-b border-line last:border-0">
@@ -755,7 +791,7 @@ function DayView({
                       {emp.name}
                     </span>
                     <span className="block text-xs text-muted font-mono">
-                      {entry && usesSchedule(entry.dayType)
+                      {entry && usesSchedule(entry.dayType) && !isDaily
                         ? `${entry.entryTime} → ${entry.exitTime}${
                             entry.lunchBreak
                               ? ` · ${entry.lunchDuration}m almuerzo`
@@ -767,7 +803,13 @@ function DayView({
                     </span>
                   </span>
                   <span className="text-right shrink-0">
-                    {worked && worked.total > 0 ? (
+                    {entry && isDaily ? (
+                      // Sin horas que mostrar: un recuadro con el tipo de día,
+                      // igual que el resto de la app.
+                      <Badge tone={DAY_TYPE_TONE[entry.dayType]}>
+                        {DAY_TYPE_META[entry.dayType].short}
+                      </Badge>
+                    ) : worked && worked.total > 0 ? (
                       <>
                         <span className="block text-sm font-mono font-bold text-fg">
                           {fmtHours(worked.total)}
@@ -849,24 +891,34 @@ function EntryEditor({
 
   const schedule = usesSchedule(form.dayType)
   const worked = calcWorkedHours(form)
+  const isDaily = employee.paymentType === "daily"
   const split = splitHours(worked.total, rules.overtimeThreshold)
   const canSave =
     !schedule || (!!form.entryTime && !!form.exitTime && !worked.invalid)
 
   const PANEL_W = 300
-  const PANEL_H = 430
+  // El contenido real varía bastante (colaboradores por día muestran pocos
+  // campos, por hora muestran varios más), así que en vez de adivinar una
+  // altura fija, el panel se limita a lo que cabe en la pantalla y hace
+  // scroll interno. Es clave usar ESTE MISMO número al calcular `top`: si el
+  // límite de altura y el clamp de posición no coinciden, el panel puede
+  // quedar posicionado más abajo de lo que su propia altura máxima permite
+  // mostrar dentro del viewport, y el botón Guardar queda inalcanzable.
+  const PANEL_MAX_H = Math.max(200, Math.min(560, window.innerHeight - 16))
   const style: React.CSSProperties = anchorRect
     ? {
         position: "fixed",
         top: Math.max(
           8,
-          Math.min(anchorRect.bottom + 6, window.innerHeight - PANEL_H - 8),
+          Math.min(anchorRect.bottom + 6, window.innerHeight - PANEL_MAX_H - 8),
         ),
         left: Math.max(
           8,
           Math.min(anchorRect.left - 60, window.innerWidth - PANEL_W - 8),
         ),
         width: PANEL_W,
+        maxHeight: PANEL_MAX_H,
+        overflowY: "auto",
         zIndex: 60,
       }
     : {
@@ -875,6 +927,8 @@ function EntryEditor({
         bottom: 12,
         transform: "translateX(-50%)",
         width: `min(${PANEL_W}px, calc(100vw - 24px))`,
+        maxHeight: PANEL_MAX_H,
+        overflowY: "auto",
         zIndex: 60,
       }
 
@@ -924,7 +978,21 @@ function EntryEditor({
           ))}
         </div>
 
-        {schedule ? (
+        {schedule && isDaily ? (
+          // Colaborador con tarifa fija por día: no hay nada que registrar en
+          // horas, así que ni se piden ni se muestran — solo se confirma el
+          // tipo de día. entryTime/exitTime quedan con el valor por defecto
+          // de blankEntry para que el registro siga siendo válido al guardar.
+          <p className="rounded-xl p-2.5 mb-3 text-[11px] bg-ok-soft text-ok font-semibold">
+            {DAY_TYPE_META[form.dayType].label} — se paga $
+            {employee.dailyRate.toFixed(2)} (tarifa fija por día)
+            {form.dayType === "feriado" && (
+              <span className="block font-normal mt-1">
+                Incluye el recargo de feriado sobre esa tarifa.
+              </span>
+            )}
+          </p>
+        ) : schedule ? (
           <>
             {/* Horario habitual: referencia visible y atajo para volver a él. */}
             <div className="flex items-center gap-2 mb-3 text-[11px]">
@@ -1060,7 +1128,9 @@ function EntryEditor({
         ) : (
           <p className="rounded-xl p-2.5 mb-3 text-[11px] bg-raised text-muted">
             {form.dayType === "vacaciones" &&
-              "Se paga la jornada estándar si la configuración lo permite."}
+              (isDaily
+                ? `Se paga la tarifa fija de $${employee.dailyRate.toFixed(2)} si la configuración lo permite.`
+                : "Se paga la jornada estándar si la configuración lo permite.")}
             {form.dayType === "incapacidad" &&
               "Por omisión no lo paga el patrono; se ajusta en Configuración."}
             {form.dayType === "ausencia" &&

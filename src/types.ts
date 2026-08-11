@@ -1,5 +1,8 @@
 export type EmployeeCategory = "profesional" | "empleado"
 
+/** `hourly` paga por hora trabajada; `daily` paga una tarifa fija por cada día laborado. */
+export type PaymentType = "hourly" | "daily"
+
 /** Qué ocurrió en un día del período. `trabajo` usa entrada/salida; el resto son días completos. */
 export type DayType = "trabajo" | "feriado" | "vacaciones" | "incapacidad" | "ausencia"
 
@@ -26,7 +29,9 @@ export interface Employee {
   position: string // cargo
   startDate: string // fecha de ingreso, YYYY-MM-DD ('' si no se registró)
   category: EmployeeCategory
-  hourlyRate: number
+  paymentType: PaymentType
+  hourlyRate: number // usado cuando paymentType es "hourly"
+  dailyRate: number // usado cuando paymentType es "daily"
   schedule: WeeklySchedule // horario habitual, usado para prellenar el registro
   // Deductions (only for empleados, but customizable)
   socialSecurityRate: number // default 9.75 for empleados, 0 for profesionales
@@ -72,9 +77,105 @@ export interface AppData {
   payHolidays: boolean // ¿se paga el feriado no trabajado?
   paySickLeave: boolean // ¿el patrono paga la incapacidad? (en Panamá suele pagarla la CSS)
   closedPeriods: ClosedPeriod[]
+  transactions: Transaction[]
+  counterparties: Counterparty[]
+  budgets: Budget[]
+  loans: Loan[]
+  goals: FinancialGoal[]
+  /** Dinero en caja/banco al inicio, antes del primer movimiento registrado. */
+  openingBalance: number
+  openingBalanceDate: string // YYYY-MM-DD ('' = sin fecha declarada)
   theme: "light" | "dark" | "system"
   companyName: string
   version: number
+}
+
+export type TransactionType = "ingreso" | "gasto"
+
+/**
+ * `pagado` ya movió dinero real; `pendiente` es una cuenta por cobrar o por
+ * pagar. La diferencia es la base de todo el flujo de caja: el saldo actual
+ * solo cuenta lo pagado, y lo pendiente alimenta «por entrar / por salir».
+ */
+export type TransactionStatus = "pagado" | "pendiente"
+
+export type PaymentMethod = "efectivo" | "transferencia" | "tarjeta" | "cheque" | "otro"
+
+/** Cada cuánto se repite un movimiento. `ninguna` = movimiento único. */
+export type Recurrence = "ninguna" | "semanal" | "quincenal" | "mensual" | "anual"
+
+/** Comprobante adjunto, guardado en el propio navegador como data URL. */
+export interface Attachment {
+  id: string
+  name: string
+  mime: string
+  size: number // bytes del archivo original
+  dataUrl: string
+}
+
+/** Movimiento contable manual: gasto o ingreso fuera de la nómina. */
+export interface Transaction {
+  id: string
+  date: string // YYYY-MM-DD — cuándo se devengó
+  dueDate: string // YYYY-MM-DD — cuándo se cobra/paga ('' = misma que date)
+  type: TransactionType
+  status: TransactionStatus
+  category: string
+  description: string
+  amount: number
+  recurrence: Recurrence
+  paymentMethod: PaymentMethod
+  counterpartyId: string // '' si no se asoció a nadie
+  tags: string[]
+  attachments: Attachment[]
+}
+
+export type CounterpartyKind = "cliente" | "proveedor"
+
+/** Cliente o proveedor al que se asocian los movimientos. */
+export interface Counterparty {
+  id: string
+  name: string
+  kind: CounterpartyKind
+  taxId: string // RUC / cédula
+  contact: string // teléfono o correo
+  notes: string
+}
+
+/** Techo de gasto mensual esperado para una categoría. */
+export interface Budget {
+  id: string
+  category: string
+  monthlyLimit: number
+}
+
+/**
+ * Préstamo o adelanto a un colaborador. Las cuotas se descuentan solas de la
+ * planilla: no se guarda un historial de pagos, se deriva del índice de
+ * quincena, así que recalcular el pasado siempre da el mismo resultado.
+ */
+export interface Loan {
+  id: string
+  employeeId: string
+  date: string // YYYY-MM-DD en que se entregó
+  amount: number // monto total prestado
+  installment: number // cuota a descontar por quincena
+  /** Primera quincena en la que se descuenta, `${year}-${MM}-${half}`. */
+  startPeriodKey: string
+  notes: string
+  active: boolean // false = condonado o suspendido, deja de descontar
+}
+
+export type GoalKind = "ahorro" | "reducir-gastos" | "aumentar-ingresos"
+
+/** Objetivo financiero con fecha límite, para medir avance. */
+export interface FinancialGoal {
+  id: string
+  kind: GoalKind
+  title: string
+  target: number
+  deadline: string // YYYY-MM
+  createdAt: string // YYYY-MM-DD
 }
 
 /** Conteo de días por tipo dentro del período. */
@@ -92,7 +193,8 @@ export interface EmployeeSummary {
   grossSalary: number // regularPay + overtimePay + holidayPay
   socialSecurityDeduction: number // solo sobre regularPay
   educationDeduction: number // solo sobre regularPay
-  totalDeductions: number
+  loanDeduction: number // cuota de préstamo o adelanto descontada en el período
+  totalDeductions: number // seguro social + educativo + préstamo
   netSalary: number // grossSalary - totalDeductions
   entriesCount: number // días con registro de cualquier tipo
   daysWorked: number // días con horas efectivas

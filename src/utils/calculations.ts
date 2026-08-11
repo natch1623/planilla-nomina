@@ -4,10 +4,12 @@ import type {
   DayType,
   Employee,
   EmployeeSummary,
+  Loan,
   PayPeriod,
   TimeEntry,
 } from "../types"
 import { getPeriodDates } from "../store"
+import { loanDeductionFor } from "./loans"
 
 /** Los parámetros de cálculo, separados del resto de AppData. */
 export interface PayrollRules {
@@ -132,7 +134,10 @@ export function calcEmployeeSummary(
   employee: Employee,
   entries: TimeEntry[],
   rules: PayrollRules,
-): EmployeeSummary {
+  loanDeduction = 0,
+)/** Cuota de préstamo del período; se calcula fuera para no acoplar el motor
+ *  de horas al de préstamos. */
+: EmployeeSummary {
   const empEntries = entries.filter((e) => e.employeeId === employee.id)
 
   let regularHours = 0
@@ -145,28 +150,43 @@ export function calcEmployeeSummary(
   let daysWorked = 0
   const dayCounts = emptyDayCounts()
 
+  const isDaily = employee.paymentType === "daily"
+
   for (const entry of empEntries) {
     dayCounts[entry.dayType] += 1
     const { total } = calcWorkedHours(entry)
 
     if (total > 0) {
       daysWorked += 1
-      const { regular, overtime } = splitHours(total, rules.overtimeThreshold)
-      regularHours += regular
-      regularPay += regular * employee.hourlyRate
-      overtimeHours += overtime
-      overtimePay += overtime * employee.hourlyRate * entry.overtimeRate
 
-      if (entry.dayType === "feriado") {
-        holidayHours += total
-        // Solo el recargo: la tarifa base ya se contó arriba como imponible.
-        holidayPay += total * employee.hourlyRate * (rules.holidayRate - 1)
+      if (isDaily) {
+        // Tarifa fija por día trabajado: no hay horas extra, las horas
+        // registradas quedan solo como referencia de asistencia.
+        regularHours += total
+        regularPay += employee.dailyRate
+
+        if (entry.dayType === "feriado") {
+          holidayHours += total
+          holidayPay += employee.dailyRate * (rules.holidayRate - 1)
+        }
+      } else {
+        const { regular, overtime } = splitHours(total, rules.overtimeThreshold)
+        regularHours += regular
+        regularPay += regular * employee.hourlyRate
+        overtimeHours += overtime
+        overtimePay += overtime * employee.hourlyRate * entry.overtimeRate
+
+        if (entry.dayType === "feriado") {
+          holidayHours += total
+          // Solo el recargo: la tarifa base ya se contó arriba como imponible.
+          holidayPay += total * employee.hourlyRate * (rules.holidayRate - 1)
+        }
       }
     } else {
       const paid = paidLeaveHours(entry.dayType, rules)
       if (paid > 0) {
         leaveHours += paid
-        regularPay += paid * employee.hourlyRate
+        regularPay += isDaily ? employee.dailyRate : paid * employee.hourlyRate
       }
     }
   }
@@ -176,7 +196,15 @@ export function calcEmployeeSummary(
   const socialSecurityDeduction =
     regularPay * (employee.socialSecurityRate / 100)
   const educationDeduction = regularPay * (employee.educationRate / 100)
-  const totalDeductions = socialSecurityDeduction + educationDeduction
+
+  // Un préstamo no puede dejar el neto en negativo: si la cuota supera lo que
+  // queda por pagar, se cobra solo hasta donde alcanza y el resto se arrastra
+  // solo, porque el saldo se deriva de lo efectivamente descontado.
+  const afterLegal = grossSalary - socialSecurityDeduction - educationDeduction
+  const appliedLoan = Math.max(0, Math.min(loanDeduction, afterLegal))
+
+  const totalDeductions =
+    socialSecurityDeduction + educationDeduction + appliedLoan
   const netSalary = grossSalary - totalDeductions
 
   return {
@@ -191,6 +219,7 @@ export function calcEmployeeSummary(
     grossSalary,
     socialSecurityDeduction,
     educationDeduction,
+    loanDeduction: appliedLoan,
     totalDeductions,
     netSalary,
     entriesCount: empEntries.length,
@@ -204,12 +233,20 @@ export function calcPeriodSummaries(
   entries: TimeEntry[],
   period: PayPeriod,
   rules: PayrollRules,
+  loans: Loan[] = [],
 ): EmployeeSummary[] {
   const { start, end } = getPeriodDates(period)
   const periodEntries = entries.filter((e) => e.date >= start && e.date <= end)
   return employees
     .filter((e) => e.active)
-    .map((emp) => calcEmployeeSummary(emp, periodEntries, rules))
+    .map((emp) =>
+      calcEmployeeSummary(
+        emp,
+        periodEntries,
+        rules,
+        loanDeductionFor(emp.id, period, loans),
+      ),
+    )
 }
 
 export interface PeriodTotals {
@@ -218,6 +255,7 @@ export interface PeriodTotals {
   deductions: number
   socialSecurity: number
   education: number
+  loans: number
   regularPay: number
   overtimePay: number
   holidayPay: number
@@ -235,6 +273,7 @@ export function calcTotals(summaries: EmployeeSummary[]): PeriodTotals {
       deductions: acc.deductions + s.totalDeductions,
       socialSecurity: acc.socialSecurity + s.socialSecurityDeduction,
       education: acc.education + s.educationDeduction,
+      loans: acc.loans + s.loanDeduction,
       regularPay: acc.regularPay + s.regularPay,
       overtimePay: acc.overtimePay + s.overtimePay,
       holidayPay: acc.holidayPay + s.holidayPay,
@@ -249,6 +288,7 @@ export function calcTotals(summaries: EmployeeSummary[]): PeriodTotals {
       deductions: 0,
       socialSecurity: 0,
       education: 0,
+      loans: 0,
       regularPay: 0,
       overtimePay: 0,
       holidayPay: 0,

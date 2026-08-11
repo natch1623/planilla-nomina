@@ -1,8 +1,14 @@
 import { useMemo, useState } from "react"
-import type { Employee, EmployeeCategory, WeeklySchedule } from "../types"
+import type {
+  Employee,
+  EmployeeCategory,
+  PaymentType,
+  WeeklySchedule,
+} from "../types"
 import { defaultWeeklySchedule } from "../store"
 import { fmtHours, initials } from "../utils/calculations"
 import { formatDate } from "../utils/dates"
+import { positionOptions } from "../utils/positions"
 import {
   describeSchedule,
   weeklyHours,
@@ -41,7 +47,9 @@ const emptyEmployee = (): Draft => ({
   position: "",
   startDate: "",
   category: "empleado",
+  paymentType: "hourly",
   hourlyRate: 0,
+  dailyRate: 0,
   schedule: defaultWeeklySchedule(),
   socialSecurityRate: 9.75,
   educationRate: 1.25,
@@ -77,6 +85,11 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
   const [tab, setTab] = useState<FormTab>("datos")
   const [query, setQuery] = useState("")
   const [pendingDelete, setPendingDelete] = useState<Employee | null>(null)
+
+  const positionSuggestions = useMemo(
+    () => positionOptions(employees),
+    [employees],
+  )
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -118,7 +131,8 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
   }
 
   const nameOk = form.name.trim().length > 0
-  const rateOk = form.hourlyRate > 0
+  const rateOk =
+    form.paymentType === "daily" ? form.dailyRate > 0 : form.hourlyRate > 0
   const canSave = nameOk && rateOk
 
   function handleSave() {
@@ -282,6 +296,7 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
                 form={form}
                 setForm={setForm}
                 setCategory={setCategory}
+                positionSuggestions={positionSuggestions}
               />
             ) : (
               <div className="space-y-3">
@@ -300,8 +315,13 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
             {!canSave && (
               <p className="flex items-center gap-2 text-[11px] text-amber">
                 <Icon name="alert" className="w-3.5 h-3.5 shrink-0" />
-                Falta {!nameOk ? "el nombre" : "el salario por hora"} en la
-                pestaña «Datos y pago».
+                Falta{" "}
+                {!nameOk
+                  ? "el nombre"
+                  : form.paymentType === "daily"
+                    ? "el salario por día"
+                    : "el salario por hora"}{" "}
+                en la pestaña «Datos y pago».
               </p>
             )}
           </div>
@@ -403,7 +423,9 @@ function EmployeeCard({
       {/* Pago y horario: los dos datos que se consultan a diario */}
       <div className="flex items-center gap-2 flex-wrap mt-3 pt-3 border-t border-line text-xs">
         <span className="font-mono font-bold text-fg">
-          ${employee.hourlyRate.toFixed(2)}/h
+          {employee.paymentType === "daily"
+            ? `$${employee.dailyRate.toFixed(2)}/día`
+            : `$${employee.hourlyRate.toFixed(2)}/h`}
         </span>
         {employee.category === "empleado" && (
           <span className="font-mono text-danger">
@@ -442,9 +464,15 @@ interface DatosTabProps {
   form: Draft
   setForm: React.Dispatch<React.SetStateAction<Draft>>
   setCategory: (c: EmployeeCategory) => void
+  positionSuggestions: string[]
 }
 
-function DatosTab({ form, setForm, setCategory }: DatosTabProps) {
+function DatosTab({
+  form,
+  setForm,
+  setCategory,
+  positionSuggestions,
+}: DatosTabProps) {
   return (
     <div className="space-y-4">
       <div className="grid sm:grid-cols-2 gap-4">
@@ -480,15 +508,25 @@ function DatosTab({ form, setForm, setCategory }: DatosTabProps) {
           />
         </Field>
 
-        <Field label="Cargo" className="sm:col-span-2">
+        <Field
+          label="Cargo"
+          className="sm:col-span-2"
+          hint="Elige uno de la lista o escribe uno nuevo; queda disponible para el próximo colaborador."
+        >
           <input
             value={form.position}
             onChange={(e) =>
               setForm((f) => ({ ...f, position: e.target.value }))
             }
-            placeholder="Ej. Asistente administrativa"
+            list="cargo-sugerencias"
+            placeholder="Ej. Chofer, Ayudante, Administrativo…"
             className={inputClass}
           />
+          <datalist id="cargo-sugerencias">
+            {positionSuggestions.map((p) => (
+              <option key={p} value={p} />
+            ))}
+          </datalist>
         </Field>
 
         <Field label="Categoría">
@@ -508,22 +546,57 @@ function DatosTab({ form, setForm, setCategory }: DatosTabProps) {
           />
         </Field>
 
-        <Field label="Salario por hora (USD)">
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={form.hourlyRate || ""}
-            onChange={(e) =>
-              setForm((f) => ({
-                ...f,
-                hourlyRate: parseFloat(e.target.value) || 0,
-              }))
+        <Field label="Método de pago">
+          <Segmented
+            value={form.paymentType}
+            onChange={(paymentType: PaymentType) =>
+              setForm((f) => ({ ...f, paymentType }))
             }
-            placeholder="0.00"
-            className={inputNumClass}
+            options={[
+              { value: "hourly" as PaymentType, label: "Por hora" },
+              { value: "daily" as PaymentType, label: "Por día" },
+            ]}
           />
         </Field>
+
+        {form.paymentType === "daily" ? (
+          <Field
+            label="Salario por día (USD)"
+            hint="Se paga esta cantidad completa por cada día trabajado, sin importar las horas."
+          >
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.dailyRate || ""}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  dailyRate: parseFloat(e.target.value) || 0,
+                }))
+              }
+              placeholder="0.00"
+              className={inputNumClass}
+            />
+          </Field>
+        ) : (
+          <Field label="Salario por hora (USD)">
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.hourlyRate || ""}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  hourlyRate: parseFloat(e.target.value) || 0,
+                }))
+              }
+              placeholder="0.00"
+              className={inputNumClass}
+            />
+          </Field>
+        )}
       </div>
 
       {form.category === "empleado" ? (

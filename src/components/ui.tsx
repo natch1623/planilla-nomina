@@ -330,13 +330,21 @@ export function Modal({
 }) {
   const ref = useRef<HTMLDivElement>(null)
 
+  // El diálogo recibe el foco al abrirse para que el teclado no siga atrapado
+  // detrás. Va en su propio efecto sin dependencias: si viviera junto al
+  // listener de Escape, cada vez que `onClose` cambiara de identidad (algo
+  // habitual con un arrow function inline) el foco volvería a saltar al
+  // diálogo en cada re-render, incluida cada tecla que se escribe en un
+  // campo del formulario.
+  useEffect(() => {
+    ref.current?.focus()
+  }, [])
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose()
     }
     document.addEventListener("keydown", onKey)
-    // El diálogo recibe el foco al abrirse para que el teclado no siga atrapado detrás.
-    ref.current?.focus()
     return () => document.removeEventListener("keydown", onKey)
   }, [onClose])
 
