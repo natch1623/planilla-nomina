@@ -86,7 +86,9 @@ function drawPayslip(
     ],
     emp.paymentType === "daily"
       ? ["Tarifa por día", `$${fmt(emp.dailyRate)}`]
-      : ["Tarifa por hora", `$${fmt(emp.hourlyRate)}`],
+      : emp.paymentType === "fixed"
+        ? ["Salario por quincena", `$${fmt(emp.fixedSalary)}`]
+        : ["Tarifa por hora", `$${fmt(emp.hourlyRate)}`],
     ["Ingreso", emp.startDate ? formatDate(emp.startDate) : "—"],
     ["Días trabajados", String(s.daysWorked)],
   ]

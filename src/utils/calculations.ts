@@ -122,6 +122,21 @@ export function splitHours(total: number, threshold: number): HourSplit {
   return { regular: threshold, overtime: total - threshold }
 }
 
+/**
+ * Días que se asume tiene una quincena al prorratear un salario fijo.
+ *
+ * Se usa un valor constante y no el conteo real del calendario: la práctica
+ * local reparte un salario mensual en dos quincenas de "15 días" cada una,
+ * aunque la segunda vaya de 13 a 16 según el mes. Cambiar esto cambiaría
+ * cuánto descuenta una ausencia sin que el usuario lo haya pedido.
+ */
+export const FIXED_SALARY_PERIOD_DAYS = 15
+
+/** Tarifa diaria equivalente de un salario fijo, para prorratear ausencias y el recargo de feriado. */
+export function fixedDayRate(employee: Employee): number {
+  return employee.fixedSalary / FIXED_SALARY_PERIOD_DAYS
+}
+
 function emptyDayCounts(): DayCounts {
   return { trabajo: 0, feriado: 0, vacaciones: 0, incapacidad: 0, ausencia: 0 }
 }
@@ -158,6 +173,14 @@ export function calcEmployeeSummary(
   const dayCounts = emptyDayCounts()
 
   const isDaily = employee.paymentType === "daily"
+  const isFixed = employee.paymentType === "fixed"
+
+  // El salario fijo se otorga completo desde el arranque: las entradas de
+  // trabajo no le suman nada porque ya está incluido, y solo una ausencia lo
+  // recorta dentro del bucle. Sin esto, un colaborador con salario fijo
+  // cobraría cero si no llegara a registrar ni un solo día.
+  if (isFixed) regularPay = employee.fixedSalary
+  const dayRate = isFixed ? fixedDayRate(employee) : 0
 
   for (const entry of empEntries) {
     dayCounts[entry.dayType] += 1
@@ -166,7 +189,15 @@ export function calcEmployeeSummary(
     if (total > 0) {
       daysWorked += 1
 
-      if (isDaily) {
+      if (isFixed) {
+        // Referencia de asistencia: el salario ya cubre el día, así que no
+        // hay pago adicional ni horas extra.
+        regularHours += total
+        if (entry.dayType === "feriado") {
+          holidayHours += total
+          holidayPay += dayRate * (rules.holidayRate - 1)
+        }
+      } else if (isDaily) {
         // Tarifa fija por día trabajado: no hay horas extra, las horas
         // registradas quedan solo como referencia de asistencia.
         regularHours += total
@@ -189,6 +220,22 @@ export function calcEmployeeSummary(
           holidayPay += total * employee.hourlyRate * (rules.holidayRate - 1)
         }
       }
+    } else if (isFixed && entry.dayType === "ausencia") {
+      // La única entrada que le cuesta dinero a un salario fijo: sin esto,
+      // "ausencia" dejaría de significar nada distinto de un día libre.
+      regularPay -= dayRate
+    } else if (isFixed) {
+      // Vacaciones, feriado no trabajado e incapacidad: el salario fijo ya los
+      // cubre sin importar los interruptores de Configuración, que solo
+      // deciden si un colaborador por hora o por día cobra ese día. Se cuentan
+      // como referencia, no como pago adicional.
+      if (
+        entry.dayType === "vacaciones" ||
+        entry.dayType === "feriado" ||
+        entry.dayType === "incapacidad"
+      ) {
+        leaveHours += rules.standardDayHours
+      }
     } else {
       const paid = paidLeaveHours(entry.dayType, rules)
       if (paid > 0) {
@@ -197,6 +244,10 @@ export function calcEmployeeSummary(
       }
     }
   }
+
+  // Solo puede quedar negativo un salario fijo con más ausencias que días
+  // tiene la quincena; el resto de tipos de pago nunca resta.
+  regularPay = Math.max(0, regularPay)
 
   const grossSalary = regularPay + overtimePay + holidayPay
   // Descuentos solo sobre salario base (horas regulares y días pagados), NO sobre recargos

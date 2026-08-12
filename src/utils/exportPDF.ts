@@ -87,7 +87,9 @@ export function exportToPDF(
     s.overtimeHours > 0 ? fmtHours(s.overtimeHours) : "—",
     s.employee.paymentType === "daily"
       ? `$${fmt(s.employee.dailyRate)}/d`
-      : `$${fmt(s.employee.hourlyRate)}/h`,
+      : s.employee.paymentType === "fixed"
+        ? `$${fmt(s.employee.fixedSalary)}/q`
+        : `$${fmt(s.employee.hourlyRate)}/h`,
     `$${fmt(s.regularPay)}`,
     s.overtimePay > 0 ? `$${fmt(s.overtimePay)}` : "—",
     s.holidayPay > 0 ? `$${fmt(s.holidayPay)}` : "—",

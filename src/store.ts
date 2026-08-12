@@ -22,7 +22,7 @@ import type {
 } from "./types"
 
 const STORAGE_KEY = "planilla_data"
-const DATA_VERSION = 8
+const DATA_VERSION = 9
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const TIME_RE = /^\d{2}:\d{2}$/
@@ -125,7 +125,9 @@ function normalizeEmployee(raw: any): Employee | null {
   if (!name) return null
   const category = raw.category === "profesional" ? "profesional" : "empleado"
   const paymentType: PaymentType =
-    raw.paymentType === "daily" ? "daily" : "hourly"
+    raw.paymentType === "daily" || raw.paymentType === "fixed"
+      ? raw.paymentType
+      : "hourly"
   return {
     id: str(raw.id) || crypto.randomUUID(),
     name,
@@ -136,6 +138,9 @@ function normalizeEmployee(raw: any): Employee | null {
     paymentType,
     hourlyRate: Math.max(0, num(raw.hourlyRate, 0)),
     dailyRate: Math.max(0, num(raw.dailyRate, 0)),
+    // Anterior a la v9: los datos existentes no traían este campo y quedan en 0,
+    // que es inofensivo porque solo se usa cuando paymentType es "fixed".
+    fixedSalary: Math.max(0, num(raw.fixedSalary, 0)),
     // Los datos anteriores a la v3 no traían horario: se les asigna el estándar.
     schedule: normalizeSchedule(raw.schedule),
     socialSecurityRate: Math.max(

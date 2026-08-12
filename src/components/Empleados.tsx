@@ -56,6 +56,7 @@ const emptyEmployee = (): Draft => ({
   paymentType: "hourly",
   hourlyRate: 0,
   dailyRate: 0,
+  fixedSalary: 0,
   schedule: defaultWeeklySchedule(),
   socialSecurityRate: 9.75,
   educationRate: 1.25,
@@ -143,7 +144,11 @@ export default function Empleados({
 
   const nameOk = form.name.trim().length > 0
   const rateOk =
-    form.paymentType === "daily" ? form.dailyRate > 0 : form.hourlyRate > 0
+    form.paymentType === "daily"
+      ? form.dailyRate > 0
+      : form.paymentType === "fixed"
+        ? form.fixedSalary > 0
+        : form.hourlyRate > 0
   const canSave = nameOk && rateOk
 
   function handleSave() {
@@ -355,7 +360,9 @@ export default function Empleados({
                   ? "el nombre"
                   : form.paymentType === "daily"
                     ? "el salario por día"
-                    : "el salario por hora"}{" "}
+                    : form.paymentType === "fixed"
+                      ? "el salario quincenal"
+                      : "el salario por hora"}{" "}
                 en la pestaña «Datos y pago».
               </p>
             )}
@@ -482,7 +489,9 @@ function EmployeeCard({
         <span className="font-mono font-bold text-fg">
           {employee.paymentType === "daily"
             ? `$${employee.dailyRate.toFixed(2)}/día`
-            : `$${employee.hourlyRate.toFixed(2)}/h`}
+            : employee.paymentType === "fixed"
+              ? `$${employee.fixedSalary.toFixed(2)}/quincena`
+              : `$${employee.hourlyRate.toFixed(2)}/h`}
         </span>
         {employee.category === "empleado" && (
           <span className="font-mono text-danger">
@@ -612,6 +621,7 @@ function DatosTab({
             options={[
               { value: "hourly" as PaymentType, label: "Por hora" },
               { value: "daily" as PaymentType, label: "Por día" },
+              { value: "fixed" as PaymentType, label: "Salario fijo" },
             ]}
           />
         </Field>
@@ -630,6 +640,26 @@ function DatosTab({
                 setForm((f) => ({
                   ...f,
                   dailyRate: parseFloat(e.target.value) || 0,
+                }))
+              }
+              placeholder="0.00"
+              className={inputNumClass}
+            />
+          </Field>
+        ) : form.paymentType === "fixed" ? (
+          <Field
+            label="Salario quincenal fijo (USD)"
+            hint="Se paga completo cada quincena, sin importar los días u horas registrados. Solo una ausencia lo recorta."
+          >
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.fixedSalary || ""}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  fixedSalary: parseFloat(e.target.value) || 0,
                 }))
               }
               placeholder="0.00"

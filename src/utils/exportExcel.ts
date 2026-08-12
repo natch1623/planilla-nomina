@@ -56,11 +56,17 @@ function row(
           ? "Serv. profesional"
           : "Empleado",
       "Método de pago":
-        s.employee.paymentType === "daily" ? "Por día" : "Por hora",
+        s.employee.paymentType === "daily"
+          ? "Por día"
+          : s.employee.paymentType === "fixed"
+            ? "Salario fijo"
+            : "Por hora",
       Tarifa: round(
         s.employee.paymentType === "daily"
           ? s.employee.dailyRate
-          : s.employee.hourlyRate,
+          : s.employee.paymentType === "fixed"
+            ? s.employee.fixedSalary
+            : s.employee.hourlyRate,
       ),
       "Días trabajados": s.daysWorked,
       "Días vacaciones": s.dayCounts.vacaciones,

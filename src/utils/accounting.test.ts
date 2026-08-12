@@ -187,6 +187,7 @@ function employee(): Employee {
     paymentType: "hourly",
     hourlyRate: 10,
     dailyRate: 0,
+    fixedSalary: 0,
     schedule: defaultWeeklySchedule(),
     socialSecurityRate: 9.75,
     educationRate: 1.25,

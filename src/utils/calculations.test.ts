@@ -36,6 +36,7 @@ function employee(overrides: Partial<Employee> = {}): Employee {
     paymentType: "hourly",
     hourlyRate: 10,
     dailyRate: 0,
+    fixedSalary: 0,
     schedule: defaultWeeklySchedule(),
     socialSecurityRate: 9.75,
     educationRate: 1.25,
@@ -303,6 +304,115 @@ describe("calcEmployeeSummary (por día)", () => {
     )
 
     expect(s.regularPay).toBe(50)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* calcEmployeeSummary — salario fijo por quincena                     */
+/* ------------------------------------------------------------------ */
+
+describe("calcEmployeeSummary (salario fijo)", () => {
+  const fixed = employee({
+    paymentType: "fixed",
+    hourlyRate: 0,
+    fixedSalary: 450,
+  })
+
+  it("paga el salario completo sin ningún registro", () => {
+    // Es la diferencia clave con "por día": un colaborador asalariado cobra
+    // aunque no haya llenado la cuadrícula esa quincena.
+    const s = calcEmployeeSummary(fixed, [], RULES)
+
+    expect(s.regularPay).toBe(450)
+    expect(s.grossSalary).toBe(450)
+  })
+
+  it("no le suma nada a un día de trabajo normal: ya está incluido", () => {
+    const s = calcEmployeeSummary(fixed, [entry()], RULES)
+
+    expect(s.regularPay).toBe(450)
+    expect(s.regularHours).toBe(8)
+    expect(s.daysWorked).toBe(1)
+  })
+
+  it("no genera horas extra aunque el día se alargue", () => {
+    const s = calcEmployeeSummary(
+      fixed,
+      [entry({ entryTime: "07:00", exitTime: "20:00" })],
+      RULES,
+    )
+
+    expect(s.overtimeHours).toBe(0)
+    expect(s.overtimePay).toBe(0)
+    expect(s.regularPay).toBe(450)
+  })
+
+  it("descuenta el día proporcional por cada ausencia", () => {
+    const s = calcEmployeeSummary(
+      fixed,
+      [entry({ dayType: "ausencia", entryTime: "", exitTime: "" })],
+      RULES,
+    )
+
+    // 450 / 15 = 30 por día.
+    expect(s.regularPay).toBe(420)
+    expect(s.dayCounts.ausencia).toBe(1)
+  })
+
+  it("nunca deja el salario en negativo por acumular ausencias", () => {
+    const entries = Array.from({ length: 20 }, (_, i) =>
+      entry({
+        id: `au-${i}`,
+        date: `2026-08-${String((i % 28) + 1).padStart(2, "0")}`,
+        dayType: "ausencia",
+        entryTime: "",
+        exitTime: "",
+      }),
+    )
+    const s = calcEmployeeSummary(fixed, entries, RULES)
+
+    expect(s.regularPay).toBe(0)
+  })
+
+  it("suma el recargo de feriado trabajado sobre la tarifa diaria equivalente", () => {
+    const s = calcEmployeeSummary(fixed, [entry({ dayType: "feriado" })], RULES)
+
+    expect(s.holidayHours).toBe(8)
+    expect(s.holidayPay).toBe(15) // (450/15) × (1.5 − 1)
+    expect(s.grossSalary).toBe(465)
+  })
+
+  it("cubre vacaciones, feriado no trabajado e incapacidad sin cambiar el pago", () => {
+    // A diferencia de por hora o por día, estos interruptores no aplican: el
+    // salario fijo ya los cubre sin importar payVacations/payHolidays/paySickLeave.
+    const apagado = {
+      ...RULES,
+      payVacations: false,
+      payHolidays: false,
+      paySickLeave: false,
+    }
+    const vacaciones = calcEmployeeSummary(
+      fixed,
+      [entry({ dayType: "vacaciones", entryTime: "", exitTime: "" })],
+      apagado,
+    )
+    const incapacidad = calcEmployeeSummary(
+      fixed,
+      [entry({ dayType: "incapacidad", entryTime: "", exitTime: "" })],
+      apagado,
+    )
+
+    expect(vacaciones.regularPay).toBe(450)
+    expect(vacaciones.leaveHours).toBe(8)
+    expect(incapacidad.regularPay).toBe(450)
+    expect(incapacidad.leaveHours).toBe(8)
+  })
+
+  it("deduce seguro social y educativo sobre el salario fijo", () => {
+    const s = calcEmployeeSummary(fixed, [], RULES)
+
+    expect(s.socialSecurityDeduction).toBeCloseTo(43.875, 10) // 450 × 9.75%
+    expect(s.educationDeduction).toBeCloseTo(5.625, 10) // 450 × 1.25%
   })
 })
 

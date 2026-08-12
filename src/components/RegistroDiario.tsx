@@ -8,6 +8,7 @@ import {
   DAY_TYPES,
   calcEmployeeSummary,
   calcWorkedHours,
+  fixedDayRate,
   fmt,
   fmtHours,
   initials,
@@ -533,7 +534,11 @@ function GridView({
                 overtime: 0,
                 pay: 0,
               }
+              // Por día y salario fijo comparten vista de cuadrícula: las horas
+              // no son lo que determina el pago, así que no hay nada que
+              // mostrar en esa columna más que el tipo de día.
               const isDaily = emp.paymentType === "daily"
+              const hidesHours = isDaily || emp.paymentType === "fixed"
               const rowBg = ri % 2 === 1 ? "bg-raised" : "bg-surface"
               return (
                 <tr key={emp.id} className="border-b border-line group/row">
@@ -609,7 +614,7 @@ function GridView({
                           }`}
                           className="w-full h-full px-0 py-1.5 block cursor-pointer disabled:cursor-default hover:ring-2 hover:ring-inset hover:ring-brand focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand"
                         >
-                          {entry && usesSchedule(entry.dayType) && !isDaily ? (
+                          {entry && usesSchedule(entry.dayType) && !hidesHours ? (
                             <span className="grid grid-cols-2">
                               <span className="text-center text-[11px] font-mono font-semibold text-ok border-r border-line">
                                 {entry.entryTime}
@@ -619,9 +624,10 @@ function GridView({
                               </span>
                             </span>
                           ) : entry ? (
-                            // Colaborador por día (o tipo de día sin horario):
-                            // un recuadro con la etiqueta, igual que ausencia,
-                            // vacaciones, etc. — no hay horas que mostrar.
+                            // Por día o salario fijo (o tipo de día sin
+                            // horario): un recuadro con la etiqueta, igual que
+                            // ausencia, vacaciones, etc. — no hay horas que
+                            // mostrar.
                             <span
                               className={`block text-[10px] font-bold ${CELL_FG[entry.dayType]}`}
                             >
@@ -635,7 +641,7 @@ function GridView({
                               <span className="text-center">—</span>
                             </span>
                           )}
-                          {!isDaily && (
+                          {!hidesHours && (
                             <span className="block text-[9px] font-bold h-3 leading-3 mt-0.5">
                               {isOver && (
                                 <span className="text-amber">+extra</span>
@@ -651,7 +657,7 @@ function GridView({
                   })}
 
                   <td className="sticky right-0 z-10 px-3 py-2 text-center border-l border-line bg-sunken">
-                    {isDaily ? (
+                    {hidesHours ? (
                       <>
                         <div className="text-xs font-mono font-bold text-fg">
                           {totals.days > 0 ? (
@@ -769,8 +775,11 @@ function DayView({
         <ul>
           {employees.map((emp) => {
             const entry = getEntry(emp.id, selectedDate)
-            const isDaily = emp.paymentType === "daily"
-            const worked = entry && !isDaily ? calcWorkedHours(entry) : null
+            // Por día y salario fijo comparten esta vista: ninguno paga por
+            // hora, así que no hay horas que calcular ni mostrar.
+            const hidesHours =
+              emp.paymentType === "daily" || emp.paymentType === "fixed"
+            const worked = entry && !hidesHours ? calcWorkedHours(entry) : null
             const isOver = !!worked && worked.total > rules.overtimeThreshold
             return (
               <li key={emp.id} className="border-b border-line last:border-0">
@@ -791,7 +800,7 @@ function DayView({
                       {emp.name}
                     </span>
                     <span className="block text-xs text-muted font-mono">
-                      {entry && usesSchedule(entry.dayType) && !isDaily
+                      {entry && usesSchedule(entry.dayType) && !hidesHours
                         ? `${entry.entryTime} → ${entry.exitTime}${
                             entry.lunchBreak
                               ? ` · ${entry.lunchDuration}m almuerzo`
@@ -803,7 +812,7 @@ function DayView({
                     </span>
                   </span>
                   <span className="text-right shrink-0">
-                    {entry && isDaily ? (
+                    {entry && hidesHours ? (
                       // Sin horas que mostrar: un recuadro con el tipo de día,
                       // igual que el resto de la app.
                       <Badge tone={DAY_TYPE_TONE[entry.dayType]}>
@@ -892,6 +901,7 @@ function EntryEditor({
   const schedule = usesSchedule(form.dayType)
   const worked = calcWorkedHours(form)
   const isDaily = employee.paymentType === "daily"
+  const isFixed = employee.paymentType === "fixed"
   const split = splitHours(worked.total, rules.overtimeThreshold)
   const canSave =
     !schedule || (!!form.entryTime && !!form.exitTime && !worked.invalid)
@@ -978,17 +988,27 @@ function EntryEditor({
           ))}
         </div>
 
-        {schedule && isDaily ? (
-          // Colaborador con tarifa fija por día: no hay nada que registrar en
-          // horas, así que ni se piden ni se muestran — solo se confirma el
-          // tipo de día. entryTime/exitTime quedan con el valor por defecto
-          // de blankEntry para que el registro siga siendo válido al guardar.
+        {schedule && (isDaily || isFixed) ? (
+          // Por día o salario fijo: no hay nada que registrar en horas, así
+          // que ni se piden ni se muestran — solo se confirma el tipo de día.
+          // entryTime/exitTime quedan con el valor por defecto de blankEntry
+          // para que el registro siga siendo válido al guardar.
           <p className="rounded-xl p-2.5 mb-3 text-[11px] bg-ok-soft text-ok font-semibold">
-            {DAY_TYPE_META[form.dayType].label} — se paga $
-            {employee.dailyRate.toFixed(2)} (tarifa fija por día)
+            {isDaily ? (
+              <>
+                {DAY_TYPE_META[form.dayType].label} — se paga $
+                {employee.dailyRate.toFixed(2)} (tarifa fija por día)
+              </>
+            ) : (
+              <>
+                {DAY_TYPE_META[form.dayType].label} — incluido en el salario
+                fijo de la quincena
+              </>
+            )}
             {form.dayType === "feriado" && (
               <span className="block font-normal mt-1">
-                Incluye el recargo de feriado sobre esa tarifa.
+                Incluye el recargo de feriado sobre{" "}
+                {isDaily ? "esa tarifa" : "la tarifa diaria equivalente"}.
               </span>
             )}
           </p>
@@ -1130,11 +1150,17 @@ function EntryEditor({
             {form.dayType === "vacaciones" &&
               (isDaily
                 ? `Se paga la tarifa fija de $${employee.dailyRate.toFixed(2)} si la configuración lo permite.`
-                : "Se paga la jornada estándar si la configuración lo permite.")}
+                : isFixed
+                  ? "Incluido en el salario fijo de la quincena."
+                  : "Se paga la jornada estándar si la configuración lo permite.")}
             {form.dayType === "incapacidad" &&
-              "Por omisión no lo paga el patrono; se ajusta en Configuración."}
+              (isFixed
+                ? "Incluido en el salario fijo de la quincena."
+                : "Por omisión no lo paga el patrono; se ajusta en Configuración.")}
             {form.dayType === "ausencia" &&
-              "Día no laborado y no pagado. Queda registrado para control."}
+              (isFixed
+                ? `Se descuenta $${fixedDayRate(employee).toFixed(2)} del salario fijo (día proporcional).`
+                : "Día no laborado y no pagado. Queda registrado para control.")}
           </p>
         )}
 

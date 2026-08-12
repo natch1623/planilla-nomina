@@ -1,7 +1,12 @@
 export type EmployeeCategory = "profesional" | "empleado"
 
-/** `hourly` paga por hora trabajada; `daily` paga una tarifa fija por cada día laborado. */
-export type PaymentType = "hourly" | "daily"
+/**
+ * `hourly` paga por hora trabajada; `daily` paga una tarifa fija por cada día
+ * laborado; `fixed` paga un monto único por la quincena completa —como un
+ * salario mensual repartido en dos—, sin importar los días u horas
+ * registrados, salvo que una ausencia lo recorte.
+ */
+export type PaymentType = "hourly" | "daily" | "fixed"
 
 /** Qué ocurrió en un día del período. `trabajo` usa entrada/salida; el resto son días completos. */
 export type DayType = "trabajo" | "feriado" | "vacaciones" | "incapacidad" | "ausencia"
@@ -32,6 +37,7 @@ export interface Employee {
   paymentType: PaymentType
   hourlyRate: number // usado cuando paymentType es "hourly"
   dailyRate: number // usado cuando paymentType es "daily"
+  fixedSalary: number // usado cuando paymentType es "fixed": monto por quincena completa
   schedule: WeeklySchedule // horario habitual, usado para prellenar el registro
   // Deductions (only for empleados, but customizable)
   socialSecurityRate: number // default 9.75 for empleados, 0 for profesionales
