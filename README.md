@@ -14,19 +14,37 @@ regulares: registro de horas, deducciones de ley, comprobantes de pago y reporte
 - **Turnos nocturnos**: una jornada que cruza la medianoche (22:00 → 06:00) se paga completa.
 - **Cierre de quincena**: congela el cálculo para que cambiar una tarifa después no reescriba
   una planilla ya pagada.
+- **Estado de resultados** en el dashboard: ingresos, costo de nómina, gastos operativos y
+  utilidad del mes, comparados contra el mes anterior y desglosados por categoría. Se puede
+  ver en base **devengado** (todo lo facturado, dice si el negocio es rentable) o en base
+  **caja** (solo lo que se movió, dice si alcanza para pagar).
+- **Módulo de contabilidad opcional**: se apaga desde Configuración y la aplicación queda
+  solo en nómina —colaboradores, registro diario y planilla—, sin borrar ningún movimiento.
 - **Exportación**: planilla en Excel, reporte consolidado en PDF y comprobante de pago
   individual por colaborador.
 - Modo claro y oscuro.
 
+## Varias empresas
+
+Cada empresa vive en su propio **perfil**, con colaboradores, planillas, préstamos y
+contabilidad completamente separados. Se cambia de una a otra desde el selector de la
+esquina superior izquierda, y se administran desde **Configuración → Empresas**.
+
+El nombre del perfil es el nombre de la empresa: se edita en **Configuración → Empresa y
+apariencia** y es el que aparece en los PDF.
+
 ## Dónde viven los datos
 
-Todo se guarda en el `localStorage` del navegador. **No hay servidor y nada sale del equipo.**
-Esto tiene dos consecuencias:
+Todo se guarda en el `localStorage` del navegador, con un índice de perfiles
+(`planilla_profiles`) y una entrada por empresa (`planilla_data_<id>`). **No hay servidor y
+nada sale del equipo.** Esto tiene dos consecuencias:
 
 - Los datos no se comparten entre navegadores ni entre computadoras.
 - Si borras los datos de navegación, se pierde la planilla.
 
-Exporta un respaldo JSON con regularidad desde **Configuración → Respaldo y datos**.
+Exporta un respaldo JSON con regularidad desde **Configuración → Respaldo y datos**. El
+respaldo cubre la empresa abierta en ese momento: con varios perfiles hay que exportar cada
+uno por separado.
 
 ## Desarrollo
 

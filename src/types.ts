@@ -85,6 +85,12 @@ export interface AppData {
   /** Dinero en caja/banco al inicio, antes del primer movimiento registrado. */
   openingBalance: number
   openingBalanceDate: string // YYYY-MM-DD ('' = sin fecha declarada)
+  /**
+   * Con el módulo apagado la aplicación se reduce a nómina: desaparecen la
+   * pestaña de Contabilidad, sus exportaciones y el estado de resultados del
+   * dashboard. Los movimientos no se borran, solo dejan de mostrarse.
+   */
+  accountingEnabled: boolean
   theme: "light" | "dark" | "system"
   companyName: string
   version: number
@@ -151,8 +157,14 @@ export interface Budget {
 
 /**
  * Préstamo o adelanto a un colaborador. Las cuotas se descuentan solas de la
- * planilla: no se guarda un historial de pagos, se deriva del índice de
- * quincena, así que recalcular el pasado siempre da el mismo resultado.
+ * planilla a partir de la quincena inicial.
+ *
+ * El saldo no se guarda como número mutable —eso obligaría a "rehacer los
+ * pagos" cada vez que se corrige una fecha— pero tampoco se deriva solo de las
+ * quincenas transcurridas: cuando el neto no alcanza para la cuota completa se
+ * descuenta menos, y esa diferencia hay que recordarla o el préstamo se daría
+ * por saldado teniendo saldo. Por eso `charges` guarda lo efectivamente
+ * cobrado en cada quincena cerrada.
  */
 export interface Loan {
   id: string
@@ -162,6 +174,11 @@ export interface Loan {
   installment: number // cuota a descontar por quincena
   /** Primera quincena en la que se descuenta, `${year}-${MM}-${half}`. */
   startPeriodKey: string
+  /**
+   * Lo realmente descontado por quincena cerrada, `periodKey` → monto. Las
+   * quincenas sin registro usan la cuota teórica: aún no se han pagado.
+   */
+  charges: Record<string, number>
   notes: string
   active: boolean // false = condonado o suspendido, deja de descontar
 }

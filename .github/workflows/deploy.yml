@@ -3,6 +3,11 @@ name: Desplegar a GitHub Pages
 on:
   push:
     branches: [main]
+  # En un pull request se verifica pero no se despliega: el job `deploy` filtra
+  # por rama. Antes los tipos solo se revisaban al llegar a main, o sea después
+  # de haber roto algo.
+  pull_request:
+    branches: [main]
   # Permite lanzar el despliegue a mano desde la pestaña Actions.
   workflow_dispatch:
 
@@ -39,6 +44,11 @@ jobs:
       - name: Verificar tipos
         run: pnpm exec tsc --noEmit
 
+      # El motor de cálculo decide cuánto cobra cada quien: no llega a
+      # producción sin pasar por sus pruebas.
+      - name: Pruebas
+        run: pnpm test
+
       - name: Construir
         env:
           # GitHub Pages sirve en https://usuario.github.io/<repo>/
@@ -51,6 +61,8 @@ jobs:
 
   deploy:
     needs: build
+    # Un pull request se verifica pero no publica: solo main llega a Pages.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

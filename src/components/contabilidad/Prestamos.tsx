@@ -29,6 +29,7 @@ const emptyDraft = (employeeId = ""): Draft => ({
   amount: 0,
   installment: 0,
   startPeriodKey: periodKeyForDate(todayISO()),
+  charges: {},
   notes: "",
   active: true,
 })

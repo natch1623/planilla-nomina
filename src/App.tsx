@@ -1,29 +1,54 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { AppData, EmployeeSummary, PayPeriod } from "./types"
 import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+import type { AppData, EmployeeSummary, PayPeriod } from "./types"
+import type { ProfileIndex } from "./store"
+import {
+  createProfile,
+  deleteProfile,
   getPeriodDates,
-  loadData,
+  loadIndex,
+  loadProfileData,
   MONTHS_ES,
   periodKey,
-  saveData,
+  profileLabel,
+  saveIndex,
+  saveProfileData,
   shiftPeriod,
+  syncProfileName,
 } from "./store"
 import { calcPeriodSummaries, rulesFrom } from "./utils/calculations"
-import { exportToExcel } from "./utils/exportExcel"
-import { exportToPDF } from "./utils/exportPDF"
-import { exportAllPayslips } from "./utils/exportPayslip"
-import {
-  exportFinancialReportPDF,
-  exportFinancialWorkbook,
-} from "./utils/exportFinanzas"
 import Dashboard from "./components/Dashboard"
-import Empleados from "./components/Empleados"
-import RegistroDiario from "./components/RegistroDiario"
-import Contabilidad from "./components/Contabilidad"
-import Configuracion from "./components/Configuracion"
 import Icon from "./components/Icon"
 import type { IconName } from "./components/Icon"
-import { Segmented, ToastStack, useToasts } from "./components/ui"
+import {
+  Button,
+  Field,
+  Modal,
+  Segmented,
+  ToastStack,
+  inputClass,
+  useToasts,
+} from "./components/ui"
+
+/**
+ * El dashboard es la pantalla de entrada y se carga de una. El resto viaja en
+ * su propio chunk: la contabilidad arrastra cuatro vistas con gráficas, y no
+ * tiene por qué descargarla quien solo viene a revisar la planilla.
+ *
+ * Los exportadores —SheetJS y jsPDF suman más de medio megabyte— se importan
+ * dentro de `runExport`, así que solo bajan cuando alguien exporta de verdad.
+ */
+const Empleados = lazy(() => import("./components/Empleados"))
+const RegistroDiario = lazy(() => import("./components/RegistroDiario"))
+const Contabilidad = lazy(() => import("./components/Contabilidad"))
+const Configuracion = lazy(() => import("./components/Configuracion"))
 
 type Tab = "dashboard" | "empleados" | "registro" | "contabilidad" | "config"
 
@@ -53,35 +78,79 @@ const TABS: TabDef[] = [
 ]
 
 export default function App() {
-  const [data, setData] = useState<AppData>(loadData)
+  // Índice y datos se leen juntos una sola vez: el perfil activo decide qué
+  // AppData cargar, y llamarlos por separado leería el índice dos veces.
+  const [boot] = useState(() => {
+    const index = loadIndex()
+    return { index, data: loadProfileData(index.activeId) }
+  })
+  const [index, setIndex] = useState<ProfileIndex>(boot.index)
+  const [data, setData] = useState<AppData>(boot.data)
   const [tab, setTab] = useState<Tab>("dashboard")
+  const accounting = data.accountingEnabled
+  const tabs = useMemo(
+    () => (accounting ? TABS : TABS.filter((t) => t.id !== "contabilidad")),
+    [accounting],
+  )
+  // Apagar el módulo estando parado en él dejaría la pestaña sin destino.
+  const activeTab: Tab = !accounting && tab === "contabilidad" ? "dashboard" : tab
   const [exportMenu, setExportMenu] = useState(false)
+  const [profileMenu, setProfileMenu] = useState(false)
+  const [creatingProfile, setCreatingProfile] = useState(false)
+  const [newProfile, setNewProfile] = useState("")
   const [savedFlash, setSavedFlash] = useState(false)
   const { toasts, push } = useToasts()
+  const hideFlash = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // Sin esto el indicador "Guardado" parpadea al abrir la aplicación,
   // antes de que el usuario haya cambiado nada.
   const firstRender = useRef(true)
 
+  const activeId = index.activeId
+
   useEffect(() => {
-    const ok = saveData(data)
+    // El primer guardado va sin demora: normaliza en disco lo que se acaba de
+    // cargar, y todavía no hay nada que el usuario pueda perder esperando.
+    // También cubre el cambio de perfil, que reemplaza `data` de golpe.
     if (firstRender.current) {
       firstRender.current = false
+      saveProfileData(activeId, data)
       return
     }
-    if (!ok) {
-      // Casi siempre es la cuota llena por comprobantes adjuntos. Callarlo
-      // dejaría al usuario trabajando sobre cambios que no se guardaron.
-      push(
-        "No se pudo guardar: almacenamiento lleno. Elimina adjuntos o exporta un respaldo.",
-        "danger",
-      )
-      return
+
+    /**
+     * Serializar todo el estado —incluidos los adjuntos en base64— en cada
+     * tecla bloqueaba el hilo principal mientras se escribía. Se agrupa en una
+     * sola escritura al frenar; el `beforeunload` cubre el caso de cerrar la
+     * pestaña dentro de esa ventana.
+     */
+    const flush = () => {
+      const ok = saveProfileData(activeId, data)
+      // El nombre del perfil es el de la empresa: si cambió, el selector tiene
+      // que reflejarlo sin obligar a recargar.
+      const renamed = syncProfileName(index, activeId, data.companyName)
+      if (renamed) setIndex(renamed)
+      if (!ok) {
+        // Casi siempre es la cuota llena por comprobantes adjuntos. Callarlo
+        // dejaría al usuario trabajando sobre cambios que no se guardaron.
+        push(
+          "No se pudo guardar: almacenamiento lleno. Elimina adjuntos o exporta un respaldo.",
+          "danger",
+        )
+        return
+      }
+      setSavedFlash(true)
+      hideFlash.current = setTimeout(() => setSavedFlash(false), 1400)
     }
-    setSavedFlash(true)
-    const t = setTimeout(() => setSavedFlash(false), 1400)
-    return () => clearTimeout(t)
-  }, [data])
+
+    const timer = setTimeout(flush, 400)
+    window.addEventListener("beforeunload", flush)
+    return () => {
+      clearTimeout(timer)
+      clearTimeout(hideFlash.current)
+      window.removeEventListener("beforeunload", flush)
+    }
+  }, [data, activeId, index, push])
 
   // El tema vive en `data-theme` sobre <html>; "sistema" se resuelve aquí.
   useEffect(() => {
@@ -96,7 +165,33 @@ export default function App() {
     return () => mq.removeEventListener("change", apply)
   }, [data.theme])
 
-  const rules = useMemo(() => rulesFrom(data), [data])
+  // Depende de los seis parámetros de cálculo, no de `data` entero: antes
+  // cualquier cambio —un movimiento contable, el tema— devolvía un objeto nuevo
+  // e invalidaba el recálculo de toda la planilla.
+  const rules = useMemo(
+    () => rulesFrom(data),
+    [
+      data.overtimeThreshold,
+      data.standardDayHours,
+      data.holidayRate,
+      data.payVacations,
+      data.payHolidays,
+      data.paySickLeave,
+    ],
+  )
+
+  /** Cuántos registros dependen de cada colaborador; ver `Empleados`. */
+  const employeeHistory = useMemo(() => {
+    const counts = new Map<string, number>()
+    const bump = (id: string) => counts.set(id, (counts.get(id) ?? 0) + 1)
+    for (const entry of data.timeEntries) bump(entry.employeeId)
+    for (const loan of data.loans) bump(loan.employeeId)
+    for (const period of data.closedPeriods) {
+      for (const summary of period.summaries) bump(summary.employee.id)
+    }
+    return counts
+  }, [data.timeEntries, data.loans, data.closedPeriods])
+
   const key = periodKey(data.currentPeriod)
   const closed = useMemo(
     () => data.closedPeriods.find((c) => c.key === key) ?? null,
@@ -123,39 +218,103 @@ export default function App() {
     setData((d) => ({ ...d, currentPeriod: p }))
   }, [])
 
+  /**
+   * Cambiar de empresa. Se descarga la actual antes de soltarla: el guardado
+   * normal está diferido, y sin este volcado los últimos segundos de trabajo se
+   * perderían al reemplazar el estado.
+   */
+  const switchProfile = useCallback(
+    (id: string) => {
+      if (id === activeId) return
+      saveProfileData(activeId, data)
+      const next = { ...index, activeId: id }
+      saveIndex(next)
+      setIndex(next)
+      setData(loadProfileData(id))
+      setTab("dashboard")
+      firstRender.current = true
+      setProfileMenu(false)
+    },
+    [activeId, data, index],
+  )
+
+  const addProfile = useCallback(
+    (name: string) => {
+      saveProfileData(activeId, data)
+      const created = createProfile(index, name)
+      setIndex(created.index)
+      setData(created.data)
+      setTab("config")
+      firstRender.current = true
+      setProfileMenu(false)
+      push(`Perfil «${name}» creado`)
+    },
+    [activeId, data, index, push],
+  )
+
+  const removeProfile = useCallback(
+    (id: string) => {
+      const next = deleteProfile(index, id)
+      if (!next) {
+        push("No se puede eliminar el único perfil", "amber")
+        return
+      }
+      setIndex(next)
+      if (id === activeId) {
+        setData(loadProfileData(next.activeId))
+        setTab("dashboard")
+      }
+      firstRender.current = true
+      push("Perfil eliminado", "danger")
+    },
+    [activeId, index, push],
+  )
+
   const { start, end } = getPeriodDates(data.currentPeriod)
 
   type ExportKind = "excel" | "pdf" | "payslips" | "finanzas-pdf" | "finanzas-excel"
 
-  function runExport(kind: ExportKind) {
+  async function runExport(kind: ExportKind) {
     setExportMenu(false)
 
-    // Los reportes financieros no dependen de la planilla del período: viven
-    // de los movimientos, así que no se bloquean cuando la quincena va vacía.
-    if (kind === "finanzas-pdf") {
-      exportFinancialReportPDF(data, rules)
-      push("Estado financiero descargado")
-      return
-    }
-    if (kind === "finanzas-excel") {
-      exportFinancialWorkbook(data, rules)
-      push("Libro financiero descargado")
-      return
-    }
+    try {
+      // Los reportes financieros no dependen de la planilla del período: viven
+      // de los movimientos, así que no se bloquean cuando la quincena va vacía.
+      if (kind === "finanzas-pdf" || kind === "finanzas-excel") {
+        const finanzas = await import("./utils/exportFinanzas")
+        if (kind === "finanzas-pdf") {
+          finanzas.exportFinancialReportPDF(data, rules)
+          push("Estado financiero descargado")
+        } else {
+          finanzas.exportFinancialWorkbook(data, rules)
+          push("Libro financiero descargado")
+        }
+        return
+      }
 
-    if (summaries.length === 0) {
-      push("No hay datos que exportar en este período", "amber")
-      return
-    }
-    if (kind === "excel") {
-      exportToExcel(summaries, data.currentPeriod)
-      push("Excel descargado")
-    } else if (kind === "pdf") {
-      exportToPDF(summaries, data.currentPeriod, data.companyName)
-      push("PDF descargado")
-    } else {
-      exportAllPayslips(summaries, data.currentPeriod, data.companyName)
-      push(`${summaries.length} comprobantes descargados`)
+      if (summaries.length === 0) {
+        push("No hay datos que exportar en este período", "amber")
+        return
+      }
+
+      if (kind === "excel") {
+        const { exportToExcel } = await import("./utils/exportExcel")
+        exportToExcel(summaries, data.currentPeriod)
+        push("Excel descargado")
+      } else if (kind === "pdf") {
+        const { exportToPDF } = await import("./utils/exportPDF")
+        exportToPDF(summaries, data.currentPeriod, data.companyName)
+        push("PDF descargado")
+      } else {
+        const { exportAllPayslips } = await import("./utils/exportPayslip")
+        exportAllPayslips(summaries, data.currentPeriod, data.companyName)
+        push(`${summaries.length} comprobantes descargados`)
+      }
+    } catch (err) {
+      // Una descarga que falla en silencio es peor que un aviso: el usuario se
+      // queda esperando un archivo que nunca llega.
+      console.error("Falló la exportación", err)
+      push("No se pudo generar el archivo. Intenta de nuevo.", "danger")
     }
   }
 
@@ -172,24 +331,87 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-3 sm:px-4">
           {/* Fila 1: identidad, período y acciones */}
           <div className="flex items-center h-14 gap-2 sm:gap-4">
-            <div className="flex items-center gap-2.5 shrink-0">
-              <div className="w-8 h-8 rounded-xl bg-brand grid place-items-center text-brand-fg">
+            <div className="relative shrink-0">
+              <button
+                onClick={() => setProfileMenu((v) => !v)}
+                aria-expanded={profileMenu}
+                aria-haspopup="menu"
+                title="Cambiar de empresa"
+                className="flex items-center gap-2.5 rounded-xl px-1 py-1 hover:bg-white/10"
+              >
+                <span className="w-8 h-8 rounded-xl bg-brand grid place-items-center text-brand-fg">
+                  <Icon
+                    name="building"
+                    className="w-4.5 h-4.5"
+                    strokeWidth={2.2}
+                  />
+                </span>
+                <span className="hidden sm:block leading-tight text-left">
+                  <span className="block font-bold text-nav-fg text-sm tracking-tight truncate max-w-[140px]">
+                    {profileLabel(
+                      index.profiles.find((p) => p.id === activeId),
+                    )}
+                  </span>
+                  <span className="block text-[10px] text-nav-muted">
+                    {index.profiles.length > 1
+                      ? `${index.profiles.length} empresas`
+                      : "Planilla"}
+                  </span>
+                </span>
                 <Icon
-                  name="building"
-                  className="w-4.5 h-4.5"
-                  strokeWidth={2.2}
+                  name="chevronDown"
+                  className="w-3 h-3 text-nav-muted shrink-0"
                 />
-              </div>
-              <div className="hidden sm:block leading-tight">
-                <div className="font-bold text-nav-fg text-sm tracking-tight">
-                  Planilla
-                </div>
-                {data.companyName && (
-                  <div className="text-[10px] text-nav-muted truncate max-w-[140px]">
-                    {data.companyName}
+              </button>
+
+              {profileMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setProfileMenu(false)}
+                  />
+                  <div
+                    role="menu"
+                    className="absolute left-0 top-full mt-2 z-50 bg-surface border border-line rounded-2xl shadow-modal w-64 overflow-hidden animate-in"
+                  >
+                    <div className="px-4 py-1.5 bg-raised">
+                      <span className="text-[10px] font-bold text-subtle uppercase tracking-widest">
+                        Empresas
+                      </span>
+                    </div>
+                    {index.profiles.map((p) => (
+                      <button
+                        key={p.id}
+                        role="menuitem"
+                        onClick={() => switchProfile(p.id)}
+                        className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-raised border-b border-line"
+                      >
+                        <Icon
+                          name="check"
+                          className={`w-3.5 h-3.5 shrink-0 text-brand ${
+                            p.id === activeId ? "" : "opacity-0"
+                          }`}
+                        />
+                        <span className="text-sm font-semibold text-fg truncate">
+                          {profileLabel(p)}
+                        </span>
+                      </button>
+                    ))}
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        setProfileMenu(false)
+                        setNewProfile("")
+                        setCreatingProfile(true)
+                      }}
+                      className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-raised text-brand"
+                    >
+                      <Icon name="plus" className="w-3.5 h-3.5 shrink-0" />
+                      <span className="text-sm font-bold">Nueva empresa</span>
+                    </button>
                   </div>
-                )}
-              </div>
+                </>
+              )}
             </div>
 
             <PeriodNav
@@ -254,23 +476,27 @@ export default function App() {
                         desc="Un desprendible por colaborador"
                         onClick={() => runExport("payslips")}
                       />
-                      <div className="px-4 py-1.5 bg-raised">
-                        <span className="text-[10px] font-bold text-subtle uppercase tracking-widest">
-                          Finanzas
-                        </span>
-                      </div>
-                      <ExportItem
-                        icon="wallet"
-                        title="PDF — Estado financiero"
-                        desc="Caja, resultado, salud y proyección"
-                        onClick={() => runExport("finanzas-pdf")}
-                      />
-                      <ExportItem
-                        icon="grid"
-                        title="Excel — Libro financiero"
-                        desc="Movimientos, historial, presupuestos y más"
-                        onClick={() => runExport("finanzas-excel")}
-                      />
+                      {accounting && (
+                        <>
+                          <div className="px-4 py-1.5 bg-raised">
+                            <span className="text-[10px] font-bold text-subtle uppercase tracking-widest">
+                              Finanzas
+                            </span>
+                          </div>
+                          <ExportItem
+                            icon="wallet"
+                            title="PDF — Estado financiero"
+                            desc="Caja, resultado, salud y proyección"
+                            onClick={() => runExport("finanzas-pdf")}
+                          />
+                          <ExportItem
+                            icon="grid"
+                            title="Excel — Libro financiero"
+                            desc="Movimientos, historial, presupuestos y más"
+                            onClick={() => runExport("finanzas-excel")}
+                          />
+                        </>
+                      )}
                     </div>
                   </>
                 )}
@@ -283,13 +509,13 @@ export default function App() {
             className="flex items-center gap-1 -mb-px overflow-x-auto"
             aria-label="Secciones"
           >
-            {TABS.map((t) => (
+            {tabs.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                aria-current={tab === t.id ? "page" : undefined}
+                aria-current={activeTab === t.id ? "page" : undefined}
                 className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-bold whitespace-nowrap border-b-2 transition-colors ${
-                  tab === t.id
+                  activeTab === t.id
                     ? "text-nav-fg border-brand"
                     : "text-nav-muted border-transparent hover:text-nav-fg"
                 }`}
@@ -323,50 +549,59 @@ export default function App() {
       )}
 
       <main id="contenido" className="max-w-7xl mx-auto px-3 sm:px-4 py-6">
-        {tab === "dashboard" && (
+        {activeTab === "dashboard" && (
           <Dashboard
             summaries={summaries}
             period={data.currentPeriod}
             companyName={data.companyName}
             closed={!!closed}
-            onNotify={push}
-          />
-        )}
-        {tab === "empleados" && (
-          <Empleados
-            employees={data.employees}
-            onChange={(employees) => setData((d) => ({ ...d, employees }))}
-            onNotify={push}
-          />
-        )}
-        {tab === "registro" && (
-          <RegistroDiario
-            employees={data.employees}
-            entries={data.timeEntries}
-            period={data.currentPeriod}
-            rules={rules}
-            loans={data.loans}
-            readOnly={!!closed}
-            onChange={(timeEntries) => setData((d) => ({ ...d, timeEntries }))}
-            onNotify={push}
-          />
-        )}
-        {tab === "contabilidad" && (
-          <Contabilidad
             data={data}
             rules={rules}
-            onChange={(patch) => setData((d) => ({ ...d, ...patch }))}
             onNotify={push}
           />
         )}
-        {tab === "config" && (
-          <Configuracion
-            data={data}
-            liveSummaries={liveSummaries}
-            onChange={setData}
-            onNotify={push}
-          />
-        )}
+        <Suspense fallback={<TabSkeleton />}>
+          {activeTab === "empleados" && (
+            <Empleados
+              employees={data.employees}
+              history={employeeHistory}
+              onChange={(employees) => setData((d) => ({ ...d, employees }))}
+              onNotify={push}
+            />
+          )}
+          {activeTab === "registro" && (
+            <RegistroDiario
+              employees={data.employees}
+              entries={data.timeEntries}
+              period={data.currentPeriod}
+              rules={rules}
+              loans={data.loans}
+              readOnly={!!closed}
+              onChange={(timeEntries) => setData((d) => ({ ...d, timeEntries }))}
+              onNotify={push}
+            />
+          )}
+          {activeTab === "contabilidad" && (
+            <Contabilidad
+              data={data}
+              rules={rules}
+              onChange={(patch) => setData((d) => ({ ...d, ...patch }))}
+              onNotify={push}
+            />
+          )}
+          {activeTab === "config" && (
+            <Configuracion
+              data={data}
+              liveSummaries={liveSummaries}
+              profiles={index.profiles}
+              activeProfileId={activeId}
+              onSwitchProfile={switchProfile}
+              onDeleteProfile={removeProfile}
+              onChange={setData}
+              onNotify={push}
+            />
+          )}
+        </Suspense>
       </main>
 
       <footer className="max-w-7xl mx-auto px-4 pb-8 text-[11px] text-subtle">
@@ -375,12 +610,75 @@ export default function App() {
         Exporta un respaldo JSON con regularidad.
       </footer>
 
+      {creatingProfile && (
+        <Modal
+          title="Nueva empresa"
+          onClose={() => setCreatingProfile(false)}
+          width="max-w-sm"
+          footer={
+            <>
+              <Button
+                onClick={() => setCreatingProfile(false)}
+                className="flex-1"
+              >
+                Cancelar
+              </Button>
+              <Button
+                variant="primary"
+                className="flex-1"
+                disabled={!newProfile.trim()}
+                onClick={() => {
+                  addProfile(newProfile.trim())
+                  setCreatingProfile(false)
+                }}
+              >
+                Crear
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-3">
+            <p className="text-sm text-muted leading-relaxed">
+              Arranca vacía y con sus propias reglas de cálculo. Sus
+              colaboradores, planillas y contabilidad no se mezclan con los de
+              las demás.
+            </p>
+            <Field label="Nombre de la empresa">
+              <input
+                autoFocus
+                value={newProfile}
+                onChange={(e) => setNewProfile(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newProfile.trim()) {
+                    addProfile(newProfile.trim())
+                    setCreatingProfile(false)
+                  }
+                }}
+                placeholder="Ej. Servicios RyS, S.A."
+                className={inputClass}
+              />
+            </Field>
+          </div>
+        </Modal>
+      )}
+
       <ToastStack toasts={toasts} />
     </div>
   )
 }
 
 /* --------------------------------------------------------------------- */
+
+/** Relleno mientras baja el chunk de una pestaña. */
+function TabSkeleton() {
+  return (
+    <div className="animate-pulse space-y-4" aria-hidden>
+      <div className="h-8 w-48 bg-raised rounded-lg" />
+      <div className="h-32 bg-raised rounded-2xl" />
+      <div className="h-32 bg-raised rounded-2xl" />
+    </div>
+  )
+}
 
 function PeriodNav({
   period,

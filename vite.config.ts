@@ -18,6 +18,9 @@ export default defineConfig(({ mode }) => {
     build: {
       sourcemap: emitSourcemaps ? 'inline' : false,
       minify: !emitSourcemaps,
+      // Sin esto dist/ acumulaba los assets de cada build anterior: llegó a 19 MB
+      // de chunks huérfanos con hash viejo.
+      emptyOutDir: true,
     },
     plugins: [
       react(),

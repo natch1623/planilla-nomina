@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import Icon from "./Icon"
 import type { IconName } from "./Icon"
@@ -458,11 +458,13 @@ export interface ToastMessage {
 export function useToasts() {
   const [toasts, setToasts] = useState<ToastMessage[]>([])
 
-  function push(text: string, tone: Tone = "ok") {
+  // Estable entre renders: los efectos que avisan de un error lo llevan en sus
+  // dependencias, y una función nueva cada vez los volvería a disparar.
+  const push = useCallback((text: string, tone: Tone = "ok") => {
     const id = Date.now() + Math.random()
     setToasts((t) => [...t, { id, text, tone }])
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3200)
-  }
+  }, [])
 
   return { toasts, push }
 }

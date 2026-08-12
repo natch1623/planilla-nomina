@@ -22,7 +22,7 @@ import type {
 } from "./types"
 
 const STORAGE_KEY = "planilla_data"
-const DATA_VERSION = 6
+const DATA_VERSION = 8
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const TIME_RE = /^\d{2}:\d{2}$/
@@ -54,6 +54,7 @@ export const defaultData: AppData = {
   goals: [],
   openingBalance: 0,
   openingBalanceDate: "",
+  accountingEnabled: true,
   theme: "system",
   companyName: "",
   version: DATA_VERSION,
@@ -309,9 +310,24 @@ function normalizeLoan(raw: any, employeeIds: Set<string>): Loan | null {
     amount,
     installment: Math.max(0, num(raw.installment, 0)),
     startPeriodKey: str(raw.startPeriodKey) || periodKeyForDate(date),
+    // Antes de la v7 no se registraba lo cobrado: los préstamos existentes
+    // arrancan sin historial y siguen usando la cuota teórica, que es
+    // exactamente lo que hacían hasta ahora.
+    charges: normalizeCharges(raw.charges),
     notes: str(raw.notes),
     active: bool(raw.active, true),
   }
+}
+
+function normalizeCharges(raw: any): Record<string, number> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  const charges: Record<string, number> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (!/^\d{4}-\d{2}-[12]$/.test(key)) continue
+    const amount = num(value, -1)
+    if (amount >= 0) charges[key] = amount
+  }
+  return charges
 }
 
 const GOAL_KINDS: GoalKind[] = ["ahorro", "reducir-gastos", "aumentar-ingresos"]
@@ -425,15 +441,124 @@ export function normalizeData(raw: any): AppData {
     openingBalanceDate: DATE_RE.test(str(raw.openingBalanceDate))
       ? raw.openingBalanceDate
       : "",
+    // Los datos anteriores a la v8 se crearon con la contabilidad visible;
+    // apagarla sola al actualizar escondería movimientos ya registrados.
+    accountingEnabled: bool(raw.accountingEnabled, true),
     theme,
     companyName: str(raw.companyName),
     version: DATA_VERSION,
   }
 }
 
-export function loadData(): AppData {
+/* ==================================================================== */
+/* Perfiles                                                             */
+/* ==================================================================== */
+
+/**
+ * Cada empresa vive en su propio perfil, con colaboradores, planillas y
+ * contabilidad completamente separados.
+ *
+ * El índice se guarda aparte de los datos, y cada perfil en su propia clave.
+ * Un único blob con todo obligaría a reescribir la empresa B —adjuntos
+ * incluidos— cada vez que se teclea una hora en la empresa A.
+ */
+const INDEX_KEY = "planilla_profiles"
+const DATA_PREFIX = "planilla_data_"
+
+export interface ProfileMeta {
+  id: string
+  /** Copia del `companyName` del perfil, para poder listarlos sin abrirlos. */
+  name: string
+}
+
+export interface ProfileIndex {
+  activeId: string
+  profiles: ProfileMeta[]
+}
+
+/** Cómo se muestra un perfil que todavía no tiene nombre de empresa. */
+export function profileLabel(meta: ProfileMeta | undefined): string {
+  return meta?.name?.trim() || "Sin nombre"
+}
+
+function dataKey(id: string): string {
+  return DATA_PREFIX + id
+}
+
+function newProfileId(): string {
+  return crypto.randomUUID()
+}
+
+function readIndex(): ProfileIndex | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(INDEX_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || !Array.isArray(parsed.profiles) || parsed.profiles.length === 0) {
+      return null
+    }
+    const profiles: ProfileMeta[] = parsed.profiles
+      .filter((p: any) => p && typeof p.id === "string" && p.id)
+      .map((p: any) => ({ id: p.id, name: str(p.name) }))
+    if (profiles.length === 0) return null
+    const activeId = profiles.some((p) => p.id === parsed.activeId)
+      ? parsed.activeId
+      : profiles[0].id
+    return { activeId, profiles }
+  } catch {
+    return null
+  }
+}
+
+export function saveIndex(index: ProfileIndex): void {
+  try {
+    localStorage.setItem(INDEX_KEY, JSON.stringify(index))
+  } catch (err) {
+    console.error("No se pudo guardar el índice de perfiles", err)
+  }
+}
+
+/**
+ * Índice de perfiles, creándolo si hace falta.
+ *
+ * La primera vez migra los datos de la versión sin perfiles: se convierten en
+ * el primer perfil en vez de perderse. La clave antigua se conserva hasta que
+ * el traslado se confirma, para no dejar al usuario sin nada si el `setItem`
+ * falla por cuota.
+ */
+export function loadIndex(): ProfileIndex {
+  const existing = readIndex()
+  if (existing) return existing
+
+  const id = newProfileId()
+  let initial: AppData = { ...defaultData }
+
+  try {
+    const legacy = localStorage.getItem(STORAGE_KEY)
+    if (legacy) {
+      initial = normalizeData(JSON.parse(legacy))
+      localStorage.removeItem(STORAGE_KEY)
+    }
+  } catch (err) {
+    console.error("No se pudo migrar los datos al primer perfil", err)
+  }
+
+  // Todo perfil del índice tiene su entrada de datos desde el principio, venga
+  // de una migración o de una instalación nueva. Dejarla para el primer
+  // guardado abriría un hueco donde el índice apunta a algo que no existe.
+  saveProfileData(id, initial)
+
+  const index: ProfileIndex = {
+    activeId: id,
+    profiles: [{ id, name: initial.companyName }],
+  }
+  saveIndex(index)
+  return index
+}
+
+export function loadProfileData(id: string): AppData {
+  try {
+    const raw = localStorage.getItem(dataKey(id))
     if (!raw) return { ...defaultData }
     return normalizeData(JSON.parse(raw))
   } catch {
@@ -447,14 +572,80 @@ export function loadData(): AppData {
  * y el usuario tiene que enterarse: si no, seguiría trabajando creyendo que sus
  * cambios quedaron guardados.
  */
-export function saveData(data: AppData): boolean {
+export function saveProfileData(id: string, data: AppData): boolean {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+    localStorage.setItem(dataKey(id), JSON.stringify(data))
     return true
   } catch (err) {
     console.error("No se pudo guardar en localStorage", err)
     return false
   }
+}
+
+/** El nombre del perfil sigue al de la empresa: es el mismo dato. */
+export function syncProfileName(
+  index: ProfileIndex,
+  id: string,
+  companyName: string,
+): ProfileIndex | null {
+  const meta = index.profiles.find((p) => p.id === id)
+  if (!meta || meta.name === companyName) return null
+  const next: ProfileIndex = {
+    ...index,
+    profiles: index.profiles.map((p) =>
+      p.id === id ? { ...p, name: companyName } : p,
+    ),
+  }
+  saveIndex(next)
+  return next
+}
+
+export interface CreatedProfile {
+  index: ProfileIndex
+  data: AppData
+  id: string
+}
+
+/** Crea un perfil vacío y lo deja activo. */
+export function createProfile(
+  index: ProfileIndex,
+  name: string,
+): CreatedProfile {
+  const id = newProfileId()
+  const data: AppData = { ...defaultData, companyName: name.trim() }
+  saveProfileData(id, data)
+  const next: ProfileIndex = {
+    activeId: id,
+    profiles: [...index.profiles, { id, name: name.trim() }],
+  }
+  saveIndex(next)
+  return { index: next, data, id }
+}
+
+/**
+ * Borra un perfil y sus datos. Nunca borra el último: la aplicación necesita
+ * al menos uno, y quedarse sin ninguno dejaría un estado irrecuperable.
+ */
+export function deleteProfile(
+  index: ProfileIndex,
+  id: string,
+): ProfileIndex | null {
+  if (index.profiles.length <= 1) return null
+  const remaining = index.profiles.filter((p) => p.id !== id)
+  if (remaining.length === index.profiles.length) return null
+
+  try {
+    localStorage.removeItem(dataKey(id))
+  } catch (err) {
+    console.error("No se pudo borrar los datos del perfil", err)
+  }
+
+  const next: ProfileIndex = {
+    activeId: index.activeId === id ? remaining[0].id : index.activeId,
+    profiles: remaining,
+  }
+  saveIndex(next)
+  return next
 }
 
 export function exportJSON(data: AppData): void {

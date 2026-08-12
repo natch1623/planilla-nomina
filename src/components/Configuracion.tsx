@@ -1,13 +1,16 @@
 import { useMemo, useState } from "react"
 import type { AppData, EmployeeSummary } from "../types"
+import type { ProfileMeta } from "../store"
 import {
   MONTHS_ES,
   exportJSON,
   getPeriodDates,
   importJSON,
   periodKey,
+  profileLabel,
 } from "../store"
 import { calcTotals, fmt } from "../utils/calculations"
+import { clearLoanCharges, recordLoanCharges } from "../utils/loans"
 import { formatDate } from "../utils/dates"
 import Icon from "./Icon"
 import {
@@ -16,6 +19,7 @@ import {
   CardHeader,
   ConfirmDialog,
   Field,
+  IconButton,
   SectionTitle,
   Segmented,
   Toggle,
@@ -28,6 +32,10 @@ interface Props {
   data: AppData
   /** El cálculo en vivo, no la foto congelada: es lo que se guardaría al cerrar. */
   liveSummaries: EmployeeSummary[]
+  profiles: ProfileMeta[]
+  activeProfileId: string
+  onSwitchProfile: (id: string) => void
+  onDeleteProfile: (id: string) => void
   onChange: (data: AppData) => void
   onNotify: (text: string, tone?: Tone) => void
 }
@@ -37,11 +45,16 @@ type Pending = "clear" | "close" | "reopen" | "import" | null
 export default function Configuracion({
   data,
   liveSummaries,
+  profiles,
+  activeProfileId,
+  onSwitchProfile,
+  onDeleteProfile,
   onChange,
   onNotify,
 }: Props) {
   const [pending, setPending] = useState<Pending>(null)
   const [importedData, setImportedData] = useState<AppData | null>(null)
+  const [pendingProfile, setPendingProfile] = useState<ProfileMeta | null>(null)
 
   const { currentPeriod } = data
   const { start, end } = getPeriodDates(currentPeriod)
@@ -88,6 +101,10 @@ export default function Configuracion({
   function closePeriod() {
     onChange({
       ...data,
+      // El cierre es el momento en que la cuota de préstamo deja de ser
+      // hipotética: se guarda lo que la planilla logró descontar de verdad,
+      // que puede ser menos si el neto no alcanzaba.
+      loans: recordLoanCharges(data.loans, liveSummaries, currentPeriod),
       closedPeriods: [
         ...data.closedPeriods.filter((c) => c.key !== key),
         {
@@ -105,6 +122,7 @@ export default function Configuracion({
   function reopenPeriod() {
     onChange({
       ...data,
+      loans: clearLoanCharges(data.loans, currentPeriod),
       closedPeriods: data.closedPeriods.filter((c) => c.key !== key),
     })
     onNotify("Quincena reabierta", "amber")
@@ -115,14 +133,62 @@ export default function Configuracion({
     <div className="space-y-5 max-w-3xl">
       <SectionTitle
         title="Configuración"
-        subtitle="Reglas de cálculo, cierre de quincena y respaldo"
+        subtitle="Perfiles, reglas de cálculo, cierre de quincena y respaldo"
       />
+
+      {/* Perfiles */}
+      {profiles.length > 1 && (
+        <Card>
+          <CardHeader
+            title="Empresas"
+            subtitle="Cada una con sus colaboradores, planillas y contabilidad por separado"
+          />
+          <div className="border border-line rounded-2xl divide-y divide-line">
+            {profiles.map((p) => {
+              const active = p.id === activeProfileId
+              return (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-3 px-4 py-3 first:rounded-t-2xl last:rounded-b-2xl"
+                >
+                  <Icon
+                    name="building"
+                    className={`w-4 h-4 shrink-0 ${active ? "text-brand" : "text-subtle"}`}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-fg truncate">
+                      {profileLabel(p)}
+                    </div>
+                    {active && (
+                      <div className="text-[11px] text-brand font-semibold">
+                        En uso
+                      </div>
+                    )}
+                  </div>
+                  {!active && (
+                    <Button onClick={() => onSwitchProfile(p.id)}>Abrir</Button>
+                  )}
+                  <IconButton
+                    icon="trash"
+                    label={`Eliminar ${profileLabel(p)}`}
+                    tone="danger"
+                    onClick={() => setPendingProfile(p)}
+                  />
+                </div>
+              )
+            })}
+          </div>
+          <p className="text-[11px] text-subtle mt-3">
+            Para crear otra empresa usa el selector de arriba a la izquierda.
+          </p>
+        </Card>
+      )}
 
       {/* Empresa y apariencia */}
       <Card>
         <CardHeader
           title="Empresa y apariencia"
-          subtitle="El nombre aparece en los PDF que exportes"
+          subtitle="El nombre aparece en los PDF y da nombre a este perfil"
         />
         <div className="grid sm:grid-cols-2 gap-4">
           <Field label="Nombre de la empresa">
@@ -223,6 +289,19 @@ export default function Configuracion({
               desc="En Panamá la incapacidad suele cubrirla la CSS, no la empresa"
               checked={data.paySickLeave}
               onChange={(v) => set("paySickLeave", v)}
+            />
+          </div>
+
+          <div className="border border-line rounded-2xl divide-y divide-line">
+            <SettingRow
+              title="Módulo de contabilidad"
+              desc={
+                data.accountingEnabled
+                  ? "Apágalo para dejar la aplicación solo en nómina: colaboradores, registro diario y planilla. Tus movimientos no se borran."
+                  : `Apagado. Los ${data.transactions.length} movimientos registrados siguen guardados y vuelven a aparecer al encenderlo.`
+              }
+              checked={data.accountingEnabled}
+              onChange={(v) => set("accountingEnabled", v)}
             />
           </div>
         </div>
@@ -354,6 +433,32 @@ export default function Configuracion({
           Autoguardado activo en este navegador
         </p>
       </Card>
+
+      {pendingProfile && (
+        <ConfirmDialog
+          title="Eliminar empresa"
+          message={
+            <>
+              Se borrarán todos los datos de{" "}
+              <strong className="text-fg">
+                {profileLabel(pendingProfile)}
+              </strong>
+              : colaboradores, registros, planillas cerradas, préstamos y
+              contabilidad. Las demás empresas no se tocan.
+              <br />
+              <br />
+              Esto no se puede deshacer. Si querés conservar una copia, abrila
+              primero y exportá su respaldo JSON.
+            </>
+          }
+          confirmLabel="Eliminar empresa"
+          onConfirm={() => {
+            onDeleteProfile(pendingProfile.id)
+            setPendingProfile(null)
+          }}
+          onCancel={() => setPendingProfile(null)}
+        />
+      )}
 
       {pending === "clear" && (
         <ConfirmDialog

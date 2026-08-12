@@ -82,9 +82,16 @@ export function spanHours(
   const entryMins = entryH * 60 + entryM
   let exitMins = exitH * 60 + exitM
 
+  // Entrada y salida iguales es ambiguo —¿cero horas o veinticuatro?— y casi
+  // siempre es un tipeo. Tratarlo como turno nocturno pagaba 23 h en silencio,
+  // así que se rechaza y la cuadrícula lo marca como registro inválido.
+  if (exitMins === entryMins) {
+    return { total: 0, crossesMidnight: false, invalid: true }
+  }
+
   // Turno nocturno: la salida cae al día siguiente. Antes esto devolvía 0 horas
   // en silencio, así que una jornada 22:00–06:00 no se pagaba.
-  const crossesMidnight = exitMins <= entryMins
+  const crossesMidnight = exitMins < entryMins
   if (crossesMidnight) exitMins += 24 * 60
 
   const worked = (exitMins - entryMins - lunchMinutes) / 60

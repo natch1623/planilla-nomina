@@ -34,6 +34,12 @@ import type { Tone } from "./ui"
 
 interface Props {
   employees: Employee[]
+  /**
+   * Cuántos registros —marcaciones, préstamos y líneas de quincenas cerradas—
+   * dependen de cada colaborador. Se usa para impedir que eliminarlo borre
+   * planillas ya pagadas.
+   */
+  history: Map<string, number>
   onChange: (employees: Employee[]) => void
   onNotify: (text: string, tone?: Tone) => void
 }
@@ -78,7 +84,12 @@ const GROUPS: GroupDef[] = [
   },
 ]
 
-export default function Empleados({ employees, onChange, onNotify }: Props) {
+export default function Empleados({
+  employees,
+  history,
+  onChange,
+  onNotify,
+}: Props) {
   const [editing, setEditing] = useState<Employee | null>(null)
   const [form, setForm] = useState<Draft>(emptyEmployee())
   const [showForm, setShowForm] = useState(false)
@@ -164,10 +175,34 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
     )
   }
 
+  /**
+   * `normalizeData` descarta los registros huérfanos al cargar, así que borrar
+   * a alguien con historial no lo saca de la lista: destruye sus marcaciones y
+   * sus préstamos de forma permanente en el siguiente guardado. Solo se permite
+   * eliminar a quien todavía no tiene nada que perder.
+   */
+  const pendingHistory = pendingDelete
+    ? (history.get(pendingDelete.id) ?? 0)
+    : 0
+
   function confirmDelete() {
-    if (!pendingDelete) return
+    if (!pendingDelete || pendingHistory > 0) return
     onChange(employees.filter((e) => e.id !== pendingDelete.id))
     onNotify(`${pendingDelete.name} eliminado`, "danger")
+    setPendingDelete(null)
+  }
+
+  function deactivatePending() {
+    if (!pendingDelete) return
+    onChange(
+      employees.map((e) =>
+        e.id === pendingDelete.id ? { ...e, active: false } : e,
+      ),
+    )
+    onNotify(
+      `${pendingDelete.name} desactivado; su historial queda intacto`,
+      "amber",
+    )
     setPendingDelete(null)
   }
 
@@ -328,22 +363,44 @@ export default function Empleados({ employees, onChange, onNotify }: Props) {
         </Modal>
       )}
 
-      {pendingDelete && (
-        <ConfirmDialog
-          title="Eliminar colaborador"
-          message={
-            <>
-              Se eliminará a{" "}
-              <strong className="text-fg">{pendingDelete.name}</strong> y todos
-              sus registros dejarán de aparecer en la planilla. Si solo quieres
-              sacarlo de la nómina actual, desactívalo en vez de eliminarlo.
-            </>
-          }
-          confirmLabel="Eliminar"
-          onConfirm={confirmDelete}
-          onCancel={() => setPendingDelete(null)}
-        />
-      )}
+      {pendingDelete &&
+        (pendingHistory > 0 ? (
+          <ConfirmDialog
+            title="Este colaborador tiene historial"
+            tone="brand"
+            message={
+              <>
+                <strong className="text-fg">{pendingDelete.name}</strong> tiene{" "}
+                <strong className="text-fg">{pendingHistory}</strong>{" "}
+                {pendingHistory === 1 ? "registro" : "registros"} entre
+                marcaciones, préstamos y quincenas cerradas. Eliminarlo los
+                borraría de forma permanente, incluidas planillas ya pagadas.
+                <br />
+                <br />
+                Desactivarlo lo saca de la nómina y de los reportes del período,
+                pero conserva todo su historial.
+              </>
+            }
+            confirmLabel="Desactivar"
+            onConfirm={deactivatePending}
+            onCancel={() => setPendingDelete(null)}
+          />
+        ) : (
+          <ConfirmDialog
+            title="Eliminar colaborador"
+            message={
+              <>
+                Se eliminará a{" "}
+                <strong className="text-fg">{pendingDelete.name}</strong>.
+                Todavía no tiene registros asociados, así que no se pierde
+                historial.
+              </>
+            }
+            confirmLabel="Eliminar"
+            onConfirm={confirmDelete}
+            onCancel={() => setPendingDelete(null)}
+          />
+        ))}
     </div>
   )
 }

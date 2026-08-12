@@ -1,0 +1,393 @@
+import { describe, expect, it } from "vitest"
+import type { Employee, TimeEntry } from "../types"
+import type { PayrollRules } from "./calculations"
+import {
+  calcEmployeeSummary,
+  calcTotals,
+  calcWorkedHours,
+  fmtHours,
+  pct,
+  spanHours,
+  splitHours,
+} from "./calculations"
+import { defaultWeeklySchedule } from "../store"
+
+/* ------------------------------------------------------------------ */
+/* Ayudantes                                                           */
+/* ------------------------------------------------------------------ */
+
+const RULES: PayrollRules = {
+  overtimeThreshold: 8,
+  standardDayHours: 8,
+  holidayRate: 1.5,
+  payVacations: true,
+  payHolidays: true,
+  paySickLeave: false,
+}
+
+function employee(overrides: Partial<Employee> = {}): Employee {
+  return {
+    id: "emp-1",
+    name: "Juan Pérez",
+    idNumber: "8-123-456",
+    position: "Técnico",
+    startDate: "2026-01-01",
+    category: "empleado",
+    paymentType: "hourly",
+    hourlyRate: 10,
+    dailyRate: 0,
+    schedule: defaultWeeklySchedule(),
+    socialSecurityRate: 9.75,
+    educationRate: 1.25,
+    active: true,
+    ...overrides,
+  }
+}
+
+function entry(overrides: Partial<TimeEntry> = {}): TimeEntry {
+  return {
+    id: "te-1",
+    employeeId: "emp-1",
+    date: "2026-08-03",
+    dayType: "trabajo",
+    entryTime: "08:00",
+    exitTime: "17:00",
+    lunchBreak: true,
+    lunchDuration: 60,
+    overtimeRate: 1.5,
+    notes: "",
+    ...overrides,
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* spanHours                                                           */
+/* ------------------------------------------------------------------ */
+
+describe("spanHours", () => {
+  it("descuenta el almuerzo de una jornada normal", () => {
+    expect(spanHours("08:00", "17:00", 60).total).toBe(8)
+  })
+
+  it("no descuenta nada cuando no hay almuerzo", () => {
+    expect(spanHours("08:00", "17:00", 0).total).toBe(9)
+  })
+
+  it("paga completo el turno que cruza la medianoche", () => {
+    const result = spanHours("22:00", "06:00", 60)
+    expect(result.total).toBe(7)
+    expect(result.crossesMidnight).toBe(true)
+  })
+
+  it("marca inválido el turno que el almuerzo se come entero", () => {
+    const result = spanHours("08:00", "08:30", 60)
+    expect(result.total).toBe(0)
+    expect(result.invalid).toBe(true)
+  })
+
+  it("devuelve cero sin marcas de tiempo", () => {
+    expect(spanHours("", "17:00", 60).total).toBe(0)
+    expect(spanHours("08:00", "", 60).total).toBe(0)
+  })
+
+  it("rechaza entrada y salida iguales en vez de pagar 23 horas", () => {
+    // Un tipeo como 08:00–08:00 es ambiguo: o son 0 h o son 24 h. Antes se
+    // interpretaba como turno nocturno y pagaba 15 horas extra en silencio.
+    const result = spanHours("08:00", "08:00", 60)
+    expect(result.total).toBe(0)
+    expect(result.invalid).toBe(true)
+    expect(result.crossesMidnight).toBe(false)
+  })
+
+  it("ignora marcas de tiempo con formato roto", () => {
+    expect(spanHours("ab:cd", "17:00", 0).total).toBe(0)
+  })
+})
+
+describe("calcWorkedHours", () => {
+  it("no cuenta horas en días sin horario", () => {
+    expect(calcWorkedHours(entry({ dayType: "vacaciones" })).total).toBe(0)
+    expect(calcWorkedHours(entry({ dayType: "ausencia" })).total).toBe(0)
+  })
+
+  it("cuenta horas en trabajo y en feriado trabajado", () => {
+    expect(calcWorkedHours(entry({ dayType: "trabajo" })).total).toBe(8)
+    expect(calcWorkedHours(entry({ dayType: "feriado" })).total).toBe(8)
+  })
+
+  it("omite el descuento cuando el almuerzo está desactivado", () => {
+    expect(calcWorkedHours(entry({ lunchBreak: false })).total).toBe(9)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* splitHours                                                          */
+/* ------------------------------------------------------------------ */
+
+describe("splitHours", () => {
+  it("no genera extras por debajo del umbral", () => {
+    expect(splitHours(7, 8)).toEqual({ regular: 7, overtime: 0 })
+  })
+
+  it("no genera extras justo en el umbral", () => {
+    expect(splitHours(8, 8)).toEqual({ regular: 8, overtime: 0 })
+  })
+
+  it("manda al excedente todo lo que pasa del umbral", () => {
+    expect(splitHours(10.5, 8)).toEqual({ regular: 8, overtime: 2.5 })
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* calcEmployeeSummary — por hora                                      */
+/* ------------------------------------------------------------------ */
+
+describe("calcEmployeeSummary (por hora)", () => {
+  it("calcula un día simple con sus deducciones de ley", () => {
+    const s = calcEmployeeSummary(employee(), [entry()], RULES)
+
+    expect(s.regularHours).toBe(8)
+    expect(s.regularPay).toBe(80)
+    expect(s.grossSalary).toBe(80)
+    expect(s.socialSecurityDeduction).toBeCloseTo(7.8, 10)
+    expect(s.educationDeduction).toBeCloseTo(1, 10)
+    expect(s.netSalary).toBeCloseTo(71.2, 10)
+    expect(s.daysWorked).toBe(1)
+  })
+
+  it("paga las horas extra al recargo de la entrada", () => {
+    // 07:00–18:00 con 1 h de almuerzo = 10 h: 8 regulares + 2 extra.
+    const s = calcEmployeeSummary(
+      employee(),
+      [entry({ entryTime: "07:00", exitTime: "18:00" })],
+      RULES,
+    )
+
+    expect(s.regularHours).toBe(8)
+    expect(s.overtimeHours).toBe(2)
+    expect(s.regularPay).toBe(80)
+    expect(s.overtimePay).toBe(30) // 2 h × 10 × 1.5
+    expect(s.grossSalary).toBe(110)
+  })
+
+  it("no aplica deducciones de ley sobre las horas extra", () => {
+    const s = calcEmployeeSummary(
+      employee(),
+      [entry({ entryTime: "07:00", exitTime: "18:00" })],
+      RULES,
+    )
+
+    // Base imponible = 80 (solo las regulares), no 110.
+    expect(s.socialSecurityDeduction).toBeCloseTo(7.8, 10)
+    expect(s.educationDeduction).toBeCloseTo(1, 10)
+  })
+
+  it("suma solo el recargo cuando se trabaja un feriado", () => {
+    const s = calcEmployeeSummary(
+      employee(),
+      [entry({ dayType: "feriado" })],
+      RULES,
+    )
+
+    expect(s.holidayHours).toBe(8)
+    expect(s.regularPay).toBe(80) // la tarifa base ya cuenta como imponible
+    expect(s.holidayPay).toBe(40) // 8 h × 10 × (1.5 − 1)
+    expect(s.grossSalary).toBe(120)
+  })
+
+  it("paga la jornada estándar en vacaciones cuando la regla lo indica", () => {
+    const s = calcEmployeeSummary(
+      employee(),
+      [entry({ dayType: "vacaciones", entryTime: "", exitTime: "" })],
+      RULES,
+    )
+
+    expect(s.leaveHours).toBe(8)
+    expect(s.regularPay).toBe(80)
+    expect(s.daysWorked).toBe(0)
+    expect(s.dayCounts.vacaciones).toBe(1)
+  })
+
+  it("no paga vacaciones si la regla está apagada", () => {
+    const s = calcEmployeeSummary(
+      employee(),
+      [entry({ dayType: "vacaciones", entryTime: "", exitTime: "" })],
+      { ...RULES, payVacations: false },
+    )
+
+    expect(s.leaveHours).toBe(0)
+    expect(s.grossSalary).toBe(0)
+  })
+
+  it("no paga la incapacidad por defecto, porque en Panamá la cubre la CSS", () => {
+    const s = calcEmployeeSummary(
+      employee(),
+      [entry({ dayType: "incapacidad", entryTime: "", exitTime: "" })],
+      RULES,
+    )
+
+    expect(s.grossSalary).toBe(0)
+    expect(s.dayCounts.incapacidad).toBe(1)
+  })
+
+  it("nunca paga una ausencia", () => {
+    const s = calcEmployeeSummary(
+      employee(),
+      [entry({ dayType: "ausencia", entryTime: "", exitTime: "" })],
+      { ...RULES, payVacations: true, payHolidays: true, paySickLeave: true },
+    )
+
+    expect(s.grossSalary).toBe(0)
+    expect(s.dayCounts.ausencia).toBe(1)
+  })
+
+  it("ignora los registros de otros colaboradores", () => {
+    const s = calcEmployeeSummary(
+      employee(),
+      [entry(), entry({ id: "te-2", employeeId: "otro" })],
+      RULES,
+    )
+
+    expect(s.entriesCount).toBe(1)
+    expect(s.regularPay).toBe(80)
+  })
+
+  it("no deduce nada a un profesional sin tasas", () => {
+    const s = calcEmployeeSummary(
+      employee({
+        category: "profesional",
+        socialSecurityRate: 0,
+        educationRate: 0,
+      }),
+      [entry()],
+      RULES,
+    )
+
+    expect(s.totalDeductions).toBe(0)
+    expect(s.netSalary).toBe(80)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* calcEmployeeSummary — por día                                       */
+/* ------------------------------------------------------------------ */
+
+describe("calcEmployeeSummary (por día)", () => {
+  const daily = employee({ paymentType: "daily", hourlyRate: 0, dailyRate: 50 })
+
+  it("paga la tarifa fija sin importar las horas", () => {
+    const s = calcEmployeeSummary(
+      daily,
+      [entry({ entryTime: "07:00", exitTime: "18:00" })],
+      RULES,
+    )
+
+    expect(s.regularPay).toBe(50)
+    expect(s.overtimeHours).toBe(0)
+    expect(s.overtimePay).toBe(0)
+  })
+
+  it("aplica el recargo de feriado sobre la tarifa diaria", () => {
+    const s = calcEmployeeSummary(daily, [entry({ dayType: "feriado" })], RULES)
+
+    expect(s.regularPay).toBe(50)
+    expect(s.holidayPay).toBe(25) // 50 × (1.5 − 1)
+    expect(s.grossSalary).toBe(75)
+  })
+
+  it("paga un día completo en vacaciones", () => {
+    const s = calcEmployeeSummary(
+      daily,
+      [entry({ dayType: "vacaciones", entryTime: "", exitTime: "" })],
+      RULES,
+    )
+
+    expect(s.regularPay).toBe(50)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Préstamos dentro del resumen                                        */
+/* ------------------------------------------------------------------ */
+
+describe("descuento de préstamo", () => {
+  it("descuenta la cuota después de las deducciones de ley", () => {
+    const s = calcEmployeeSummary(employee(), [entry()], RULES, 20)
+
+    expect(s.loanDeduction).toBe(20)
+    expect(s.totalDeductions).toBeCloseTo(28.8, 10)
+    expect(s.netSalary).toBeCloseTo(51.2, 10)
+  })
+
+  it("nunca deja el neto en negativo", () => {
+    // El neto tras deducciones de ley es 71.20; la cuota pide 500.
+    const s = calcEmployeeSummary(employee(), [entry()], RULES, 500)
+
+    expect(s.loanDeduction).toBeCloseTo(71.2, 10)
+    expect(s.netSalary).toBeCloseTo(0, 10)
+  })
+
+  it("no descuenta nada en una quincena sin salario", () => {
+    const s = calcEmployeeSummary(employee(), [], RULES, 100)
+
+    expect(s.loanDeduction).toBe(0)
+    expect(s.netSalary).toBe(0)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Agregados y formato                                                 */
+/* ------------------------------------------------------------------ */
+
+describe("calcTotals", () => {
+  it("suma los resúmenes de todo el período", () => {
+    const a = calcEmployeeSummary(employee(), [entry()], RULES)
+    const b = calcEmployeeSummary(
+      employee({ id: "emp-2" }),
+      [entry({ employeeId: "emp-2" })],
+      RULES,
+    )
+    const totals = calcTotals([a, b])
+
+    expect(totals.gross).toBe(160)
+    expect(totals.regularHours).toBe(16)
+    expect(totals.days).toBe(2)
+  })
+
+  it("devuelve ceros sin colaboradores", () => {
+    const totals = calcTotals([])
+
+    expect(totals.gross).toBe(0)
+    expect(totals.net).toBe(0)
+  })
+})
+
+describe("fmtHours", () => {
+  it("omite los minutos cuando son cero", () => {
+    expect(fmtHours(8)).toBe("8h")
+  })
+
+  it("muestra horas y minutos", () => {
+    expect(fmtHours(7.5)).toBe("7h 30m")
+  })
+
+  it("sube la hora cuando el redondeo llega a 60 minutos", () => {
+    expect(fmtHours(7.999)).toBe("8h")
+  })
+
+  it("protege contra valores no finitos", () => {
+    expect(fmtHours(NaN)).toBe("0h")
+    expect(fmtHours(-3)).toBe("0h")
+  })
+})
+
+describe("pct", () => {
+  it("calcula el porcentaje", () => {
+    expect(pct(25, 200)).toBe(12.5)
+  })
+
+  it("devuelve cero en vez de dividir por cero", () => {
+    expect(pct(10, 0)).toBe(0)
+    expect(pct(NaN, 100)).toBe(0)
+  })
+})

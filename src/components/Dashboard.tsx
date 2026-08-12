@@ -10,17 +10,22 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-import type { EmployeeSummary, PayPeriod } from "../types"
+import type { AppData, EmployeeSummary, PayPeriod } from "../types"
+import type { PayrollRules } from "../utils/calculations"
+import { periodKey, shiftPeriod } from "../store"
 import {
   DAY_TYPE_META,
   DAY_TYPES,
+  calcPeriodSummaries,
   calcTotals,
   fmt,
   fmtHours,
   initials,
   pct,
 } from "../utils/calculations"
-import { exportPayslip } from "../utils/exportPayslip"
+import { AnimatedNumber, Sparkline } from "./Metricas"
+import TendenciaMensual from "./TendenciaMensual"
+import EstadoResultados from "./EstadoResultados"
 import Icon from "./Icon"
 import {
   Badge,
@@ -38,6 +43,9 @@ interface Props {
   period: PayPeriod
   companyName: string
   closed: boolean
+  /** Datos completos, solo para el estado de resultados. */
+  data: AppData
+  rules: PayrollRules
   onNotify: (text: string, tone?: Tone) => void
 }
 
@@ -48,10 +56,56 @@ export default function Dashboard({
   period,
   companyName,
   closed,
+  data,
+  rules,
   onNotify,
 }: Props) {
   const [sort, setSort] = useState<SortKey>("net")
   const totals = useMemo(() => calcTotals(summaries), [summaries])
+
+  /**
+   * Las ocho quincenas que terminan en la actual, para las minigráficas.
+   *
+   * Una quincena cerrada aporta su foto congelada y no un recálculo: si hoy
+   * cambia una tarifa, el histórico tiene que seguir mostrando lo que se pagó.
+   */
+  const history = useMemo(() => {
+    const rows: { net: number; gross: number; hours: number }[] = []
+    for (let back = 7; back >= 0; back--) {
+      const p = shiftPeriod(period, -back)
+      const frozen = data.closedPeriods.find((c) => c.key === periodKey(p))
+      const sums =
+        frozen?.summaries ??
+        calcPeriodSummaries(
+          data.employees,
+          data.timeEntries,
+          p,
+          rules,
+          data.loans,
+        )
+      const t = calcTotals(sums)
+      rows.push({ net: t.net, gross: t.gross, hours: t.hours })
+    }
+    return rows
+  }, [
+    data.employees,
+    data.timeEntries,
+    data.closedPeriods,
+    data.loans,
+    period,
+    rules,
+  ])
+
+  // Una serie con un solo punto útil no es una tendencia: sería una línea plana
+  // con un salto al final, que sugiere una caída que nunca ocurrió.
+  const trendOf = (pick: (r: (typeof history)[number]) => number): number[] => {
+    const values = history.map(pick)
+    return values.filter((v) => v > 0).length >= 2 ? values : []
+  }
+
+  const netTrend = trendOf((r) => r.net)
+  const grossTrend = trendOf((r) => r.gross)
+  const hoursTrend = trendOf((r) => r.hours)
 
   const prof = summaries.filter((s) => s.employee.category === "profesional")
   const emp = summaries.filter((s) => s.employee.category === "empleado")
@@ -108,21 +162,43 @@ export default function Dashboard({
     return counts
   }, [summaries])
 
-  function downloadPayslip(s: EmployeeSummary) {
-    exportPayslip(s, period, companyName)
-    onNotify(`Comprobante de ${s.employee.name.split(" ")[0]} descargado`)
+  // Dinámico igual que en `App`: importarlo aquí arrastraba jsPDF al chunk
+  // inicial y anulaba la división que hace el menú de exportación.
+  async function downloadPayslip(s: EmployeeSummary) {
+    try {
+      const { exportPayslip } = await import("../utils/exportPayslip")
+      exportPayslip(s, period, companyName)
+      onNotify(`Comprobante de ${s.employee.name.split(" ")[0]} descargado`)
+    } catch (err) {
+      console.error("Falló el comprobante", err)
+      onNotify("No se pudo generar el comprobante.", "danger")
+    }
   }
+
+  // El estado de resultados vive del mes calendario y de los movimientos, no de
+  // la quincena: sigue teniendo algo que decir aunque la planilla vaya vacía.
+  const estadoResultados = data.accountingEnabled ? (
+    <>
+      <EstadoResultados data={data} rules={rules} />
+      <TendenciaMensual data={data} rules={rules} />
+    </>
+  ) : null
 
   if (summaries.length === 0) {
     return (
-      <div className="space-y-6">
+      <div className="space-y-5">
         <SectionTitle
           title="Dashboard"
-          subtitle="Resumen de la quincena seleccionada"
+          subtitle={
+            data.accountingEnabled
+              ? "Resultado del mes y resumen de la quincena"
+              : "Resumen de la quincena seleccionada"
+          }
         />
+        {estadoResultados}
         <EmptyState
           icon="dashboard"
-          title="Sin datos para este período"
+          title="Sin planilla para este período"
           message="Agrega colaboradores y registra horas en la pestaña Registro Diario para ver el resumen."
         />
       </div>
@@ -146,24 +222,43 @@ export default function Dashboard({
         }
       />
 
+      {estadoResultados}
+
+      {data.accountingEnabled && (
+        <div className="text-[10px] font-bold text-subtle uppercase tracking-widest pt-1">
+          Planilla de la quincena
+        </div>
+      )}
+
       {/* KPI */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Kpi
           label="Neto a pagar"
-          value={`$${fmt(totals.net)}`}
+          amount={totals.net}
+          format={(n) => `$${fmt(n)}`}
           tone="ok"
-          sub="Lo que sale de caja"
+          sub={
+            netTrend.length >= 2
+              ? `Últimas ${netTrend.length} quincenas`
+              : "Lo que sale de caja"
+          }
           emphasis
+          trend={netTrend}
+          trendColor="var(--ok)"
         />
         <Kpi
           label="Salario bruto"
-          value={`$${fmt(totals.gross)}`}
+          amount={totals.gross}
+          format={(n) => `$${fmt(n)}`}
           tone="brand"
           sub={`Base $${fmt(totals.regularPay)}`}
+          trend={grossTrend}
+          trendColor="var(--brand)"
         />
         <Kpi
           label="Descuentos"
-          value={`−$${fmt(totals.deductions)}`}
+          amount={totals.deductions}
+          format={(n) => `−$${fmt(n)}`}
           tone="danger"
           sub={
             totals.loans > 0
@@ -173,13 +268,16 @@ export default function Dashboard({
         />
         <Kpi
           label="Horas totales"
-          value={fmtHours(totals.hours)}
+          amount={totals.hours}
+          format={fmtHours}
           tone="amber"
           sub={
             totals.overtimeHours > 0
               ? `${fmtHours(totals.overtimeHours)} en extras`
               : "Sin horas extra"
           }
+          trend={hoursTrend}
+          trendColor="var(--amber)"
         />
       </div>
 
@@ -542,30 +640,47 @@ const KPI_TONE: Record<Tone, string> = {
 
 function Kpi({
   label,
-  value,
+  amount,
+  format,
   sub,
   tone,
   emphasis,
+  trend,
+  trendColor,
 }: {
   label: string
-  value: string
+  amount: number
+  /** Cómo se pinta la cifra; se aplica también a los valores intermedios. */
+  format: (n: number) => string
   sub: string
   tone: Tone
   emphasis?: boolean
+  /** Serie histórica opcional para la minigráfica del pie de la tarjeta. */
+  trend?: number[]
+  trendColor?: string
 }) {
   return (
-    <Card className={emphasis ? "ring-2 ring-ok/25" : ""}>
+    <Card
+      className={`relative overflow-hidden transition-shadow hover:shadow-pop ${
+        emphasis ? "ring-2 ring-ok/25" : ""
+      }`}
+    >
       <p className="text-[11px] text-muted uppercase tracking-wider font-semibold">
         {label}
       </p>
-      <p
-        className={`num mt-1.5 font-extrabold ${
+      <AnimatedNumber
+        value={amount}
+        format={format}
+        className={`num mt-1.5 block font-extrabold ${
           emphasis ? "text-3xl" : "text-2xl"
         } ${KPI_TONE[tone]}`}
-      >
-        {value}
-      </p>
+      />
       <p className="text-[11px] text-subtle mt-1 truncate">{sub}</p>
+      {trend && trend.length >= 2 && (
+        <div className="-mx-4 -mb-4 mt-2 opacity-70">
+          <Sparkline values={trend} color={trendColor} height={26} />
+        </div>
+      )}
     </Card>
   )
 }
