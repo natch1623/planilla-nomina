@@ -10,6 +10,8 @@ import type {
   FinancialGoal,
   GoalKind,
   Loan,
+  PayrollAdjustment,
+  PayrollAdjustmentKind,
   PayPeriod,
   PaymentMethod,
   PaymentType,
@@ -22,7 +24,7 @@ import type {
 } from "./types"
 
 const STORAGE_KEY = "planilla_data"
-const DATA_VERSION = 9
+const DATA_VERSION = 10
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const TIME_RE = /^\d{2}:\d{2}$/
@@ -47,6 +49,7 @@ export const defaultData: AppData = {
   payHolidays: true,
   paySickLeave: false,
   closedPeriods: [],
+  manualAdjustments: [],
   transactions: [],
   counterparties: [],
   budgets: [],
@@ -324,6 +327,35 @@ function normalizeLoan(raw: any, employeeIds: Set<string>): Loan | null {
   }
 }
 
+function normalizeAdjustment(
+  raw: any,
+  employeeIds: Set<string>,
+): PayrollAdjustment | null {
+  if (!raw || typeof raw !== "object") return null
+  const employeeId = str(raw.employeeId)
+  if (!employeeIds.has(employeeId)) return null
+  const periodKey = /^\d{4}-\d{2}-[12]$/.test(str(raw.periodKey))
+    ? str(raw.periodKey)
+    : ""
+  if (!periodKey) return null
+  const amount = Math.max(0, num(raw.amount, 0))
+  if (amount <= 0) return null
+  const kind: PayrollAdjustmentKind =
+    raw.kind === "descuento" ? "descuento" : "bono"
+  return {
+    id: str(raw.id) || crypto.randomUUID(),
+    employeeId,
+    periodKey,
+    kind,
+    amount,
+    note: str(raw.note).trim(),
+    createdAt:
+      typeof raw.createdAt === "string" && raw.createdAt
+        ? raw.createdAt
+        : new Date().toISOString(),
+  }
+}
+
 function normalizeCharges(raw: any): Record<string, number> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
   const charges: Record<string, number> = {}
@@ -384,13 +416,39 @@ export function normalizeData(raw: any): AppData {
     : []
 
   const closedPeriods: ClosedPeriod[] = Array.isArray(raw.closedPeriods)
-    ? raw.closedPeriods.filter(
-        (c: any) =>
-          c &&
-          typeof c === "object" &&
-          typeof c.key === "string" &&
-          Array.isArray(c.summaries),
-      )
+    ? raw.closedPeriods
+        .filter(
+          (c: any) =>
+            c &&
+            typeof c === "object" &&
+            typeof c.key === "string" &&
+            Array.isArray(c.summaries),
+        )
+        // Las planillas congeladas antes de existir los ajustes manuales no
+        // traen el campo: sin este relleno los totales de los reportes salen
+        // como NaN en cuanto se suma una quincena vieja.
+        .map((c: any) => ({
+          ...c,
+          summaries: c.summaries.map((s: any) => ({
+            ...s,
+            manualAdjustment: Number.isFinite(s?.manualAdjustment)
+              ? s.manualAdjustment
+              : 0,
+            // Antes de separarse las horas extra del salario, el neto ya las
+            // incluía: para esas planillas el neto ES lo que se pagó.
+            totalPay: Number.isFinite(s?.totalPay) ? s.totalPay : s?.netSalary,
+          })),
+        }))
+    : []
+
+  const manualAdjustments: PayrollAdjustment[] = Array.isArray(
+    raw.manualAdjustments,
+  )
+    ? raw.manualAdjustments
+        .map((a: any) => normalizeAdjustment(a, employeeIds))
+        .filter(
+          (a: PayrollAdjustment | null): a is PayrollAdjustment => a !== null,
+        )
     : []
 
   const transactions: Transaction[] = Array.isArray(raw.transactions)
@@ -437,6 +495,7 @@ export function normalizeData(raw: any): AppData {
     payHolidays: bool(raw.payHolidays, true),
     paySickLeave: bool(raw.paySickLeave, false),
     closedPeriods,
+    manualAdjustments,
     transactions,
     counterparties,
     budgets,

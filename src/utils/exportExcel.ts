@@ -1,7 +1,8 @@
 import * as XLSX from "xlsx"
-import type { EmployeeSummary, PayPeriod } from "../types"
-import { MONTHS_ES } from "../store"
+import type { EmployeeSummary, PayPeriod, TimeEntry } from "../types"
+import { MONTHS_ES, getPeriodDates } from "../store"
 import { DAY_TYPE_META, DAY_TYPES, calcTotals } from "./calculations"
+import { attendanceFor } from "./attendance"
 
 const round = (n: number) => Math.round(n * 100) / 100
 
@@ -16,7 +17,7 @@ const MONEY = '"$"#,##0.00'
 const HOURS = "0.00"
 
 /** Índices de columna, en el mismo orden en que `row()` declara las claves. */
-const MONEY_COLUMNS = [5, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+const MONEY_COLUMNS = [5, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
 const HOURS_COLUMNS = [11, 12, 13]
 
 function applyFormats(ws: XLSX.WorkSheet): void {
@@ -77,14 +78,20 @@ function row(
       "Horas extra": round(s.overtimeHours),
       "Horas pagadas sin trabajar": round(s.leaveHours),
       "Salario base (imponible)": round(s.regularPay),
-      "Recargo horas extra": round(s.overtimePay),
+      "Salario de horas extra": round(s.overtimePay),
       "Recargo feriado": round(s.holidayPay),
-      "Salario bruto": round(s.grossSalary),
+      "Salario bruto (sin extras)": round(s.grossSalary),
       "Seg. social (-)": round(s.socialSecurityDeduction),
       "Seg. educativo (-)": round(s.educationDeduction),
       "Préstamo (-)": round(s.loanDeduction),
       "Total descuentos": round(s.totalDeductions),
+      // Un solo campo con signo, y no dos columnas: así la resta cuadra sola
+      // (bruto − descuentos + ajuste = neto) sin fórmulas de apoyo.
+      "Bono (+) / descuento (−) manual": round(s.manualAdjustment || 0),
       "Salario neto": round(s.netSalary),
+      // Lo que de verdad sale de caja: el neto del salario más las horas extra,
+      // que se pagan aparte del sueldo.
+      "Total a pagar": round(s.totalPay ?? s.netSalary),
     }
   }
 
@@ -105,14 +112,16 @@ function row(
     "Horas extra": round(t.overtimeHours),
     "Horas pagadas sin trabajar": "",
     "Salario base (imponible)": round(t.regularPay),
-    "Recargo horas extra": round(t.overtimePay),
+    "Salario de horas extra": round(t.overtimePay),
     "Recargo feriado": round(t.holidayPay),
-    "Salario bruto": round(t.gross),
+    "Salario bruto (sin extras)": round(t.gross),
     "Seg. social (-)": round(t.socialSecurity),
     "Seg. educativo (-)": round(t.education),
     "Préstamo (-)": round(t.loans),
     "Total descuentos": round(t.deductions),
+    "Bono (+) / descuento (−) manual": round(t.adjustments),
     "Salario neto": round(t.net),
+    "Total a pagar": round(t.totalPay),
   }
 }
 
@@ -124,6 +133,8 @@ function row(
 export function buildPayrollWorkbook(
   summaries: EmployeeSummary[],
   period: PayPeriod,
+  /** Registros del período; sin ellos se omite la hoja de asistencia. */
+  entries?: TimeEntry[],
 ): XLSX.WorkBook {
   const periodLabel = `${MONTHS_ES[period.month - 1]} ${period.year} - Q${period.half}`
   const totals = calcTotals(summaries)
@@ -157,7 +168,9 @@ export function buildPayrollWorkbook(
     { wch: 14 },
     { wch: 16 },
     { wch: 16 },
+    { wch: 30 },
     { wch: 14 },
+    { wch: 15 },
   ]
   // Congela el encabezado y la columna de nombres al desplazarse.
   ws["!freeze"] = { xSplit: 1, ySplit: 1 }
@@ -198,7 +211,7 @@ export function buildPayrollWorkbook(
         money: true,
       },
       {
-        concepto: "Recargo horas extra",
+        concepto: "Salario de horas extra",
         monto: round(totals.overtimePay),
         money: true,
       },
@@ -207,7 +220,11 @@ export function buildPayrollWorkbook(
         monto: round(totals.holidayPay),
         money: true,
       },
-      { concepto: "Salario bruto", monto: round(totals.gross), money: true },
+      {
+        concepto: "Salario bruto (sin extras)",
+        monto: round(totals.gross),
+        money: true,
+      },
       {
         concepto: "Seguro social",
         monto: round(totals.socialSecurity),
@@ -224,7 +241,13 @@ export function buildPayrollWorkbook(
         monto: round(totals.deductions),
         money: true,
       },
-      { concepto: "NETO A PAGAR", monto: round(totals.net), money: true },
+      {
+        concepto: "Bonos (+) / descuentos (−) manuales",
+        monto: round(totals.adjustments),
+        money: true,
+      },
+      { concepto: "Salario neto", monto: round(totals.net), money: true },
+      { concepto: "TOTAL A PAGAR", monto: round(totals.totalPay), money: true },
     ]
 
   const resumen = XLSX.utils.json_to_sheet(
@@ -256,6 +279,55 @@ export function buildPayrollWorkbook(
     XLSX.utils.book_append_sheet(wb, wsDetail, "Días")
   }
 
+  // Hoja de asistencia: la misma marcación que sale en el comprobante, aquí
+  // en formato tabular para poder filtrar por colaborador o por día.
+  if (entries && summaries.length > 0) {
+    const { start, end } = getPeriodDates(period)
+    const attendance = summaries.flatMap((s) =>
+      attendanceFor(entries, s.employee.id, start, end).records.map((r) => ({
+          Colaborador: s.employee.name,
+          Fecha: r.date,
+          Día: r.dayLabel,
+          Tipo: r.typeLabel,
+          Entrada: r.entryTime,
+          Salida: r.exitTime,
+          "Almuerzo (min)": r.lunchMinutes,
+          "Horas netas": round(r.hours),
+          "Recargo extra": r.overtimeRate !== 1 ? `x${r.overtimeRate}` : "",
+          Nota: r.note,
+        })),
+    )
+    if (attendance.length > 0) {
+      const wsAttendance = XLSX.utils.json_to_sheet(attendance)
+      wsAttendance["!cols"] = [
+        { wch: 26 },
+        { wch: 12 },
+        { wch: 10 },
+        { wch: 14 },
+        { wch: 10 },
+        { wch: 10 },
+        { wch: 14 },
+        { wch: 12 },
+        { wch: 14 },
+        { wch: 34 },
+      ]
+      wsAttendance["!freeze"] = { xSplit: 1, ySplit: 1 }
+      wsAttendance["!autofilter"] = {
+        ref: XLSX.utils.encode_range(
+          { r: 0, c: 0 },
+          { r: attendance.length, c: 9 },
+        ),
+      }
+      // Las horas se guardan como número con formato, igual que en la planilla:
+      // así la hoja sirve para sumar y no solo para mirar.
+      for (let r = 1; r <= attendance.length; r++) {
+        const cell = wsAttendance[XLSX.utils.encode_cell({ r, c: 7 })]
+        if (cell && cell.t === "n") cell.z = HOURS
+      }
+      XLSX.utils.book_append_sheet(wb, wsAttendance, "Asistencia")
+    }
+  }
+
   // Hoja de contexto: quién lo generó y con qué período, para que el archivo
   // se explique solo cuando llegue a contabilidad.
   const meta = XLSX.utils.json_to_sheet([
@@ -272,9 +344,10 @@ export function buildPayrollWorkbook(
 export function exportToExcel(
   summaries: EmployeeSummary[],
   period: PayPeriod,
+  entries?: TimeEntry[],
 ): void {
   XLSX.writeFile(
-    buildPayrollWorkbook(summaries, period),
+    buildPayrollWorkbook(summaries, period, entries),
     `planilla_${period.year}_${String(period.month).padStart(2, "0")}_q${period.half}.xlsx`,
   )
 }

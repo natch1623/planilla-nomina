@@ -168,7 +168,11 @@ describe("calcEmployeeSummary (por hora)", () => {
     expect(s.overtimeHours).toBe(2)
     expect(s.regularPay).toBe(80)
     expect(s.overtimePay).toBe(30) // 2 h × 10 × 1.5
-    expect(s.grossSalary).toBe(110)
+    // El bruto es solo salario: las extras se pagan aparte y aparecen en el
+    // total entregado.
+    expect(s.grossSalary).toBe(80)
+    expect(s.netSalary).toBeCloseTo(71.2, 10)
+    expect(s.totalPay).toBeCloseTo(101.2, 10)
   })
 
   it("no aplica deducciones de ley sobre las horas extra", () => {
@@ -499,5 +503,112 @@ describe("pct", () => {
   it("devuelve cero en vez de dividir por cero", () => {
     expect(pct(10, 0)).toBe(0)
     expect(pct(NaN, 100)).toBe(0)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Ajustes manuales                                                    */
+/* ------------------------------------------------------------------ */
+
+describe("ajustes manuales", () => {
+  it("suma el bono al neto y lo declara aparte de las deducciones", () => {
+    const base = calcEmployeeSummary(employee(), [entry()], RULES)
+    const conBono = calcEmployeeSummary(employee(), [entry()], RULES, 0, 25)
+
+    expect(conBono.manualAdjustment).toBe(25)
+    expect(conBono.totalDeductions).toBeCloseTo(base.totalDeductions, 10)
+    expect(conBono.netSalary).toBeCloseTo(base.netSalary + 25, 10)
+  })
+
+  it("recorta el descuento que dejaría el neto en negativo", () => {
+    const s = calcEmployeeSummary(employee(), [entry()], RULES, 0, -9999)
+
+    expect(s.netSalary).toBe(0)
+    expect(s.manualAdjustment).toBeCloseTo(-(s.grossSalary - s.totalDeductions), 10)
+  })
+
+  it("el bruto menos deducciones más ajustes explica el neto en los totales", () => {
+    const totals = calcTotals([
+      calcEmployeeSummary(employee(), [entry()], RULES, 0, 25),
+      calcEmployeeSummary(
+        employee({ id: "emp-2" }),
+        [entry({ employeeId: "emp-2" })],
+        RULES,
+        0,
+        -10,
+      ),
+    ])
+
+    expect(totals.adjustments).toBeCloseTo(15, 10)
+    expect(totals.net).toBeCloseTo(
+      totals.gross - totals.deductions + totals.adjustments,
+      10,
+    )
+  })
+
+  it("una planilla congelada sin el campo no ensucia los totales", () => {
+    const legacy = calcEmployeeSummary(employee(), [entry()], RULES)
+    delete (legacy as { manualAdjustment?: number }).manualAdjustment
+
+    expect(calcTotals([legacy]).adjustments).toBe(0)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Horas extra fuera del salario                                       */
+/* ------------------------------------------------------------------ */
+
+describe("separación de las horas extra", () => {
+  const withOvertime = () =>
+    calcEmployeeSummary(
+      employee(),
+      [entry({ entryTime: "07:00", exitTime: "18:00" })],
+      RULES,
+    )
+
+  it("deja el bruto con el salario y las extras aparte", () => {
+    const s = withOvertime()
+
+    expect(s.grossSalary).toBe(s.regularPay + s.holidayPay)
+    expect(s.grossSalary).not.toBe(s.grossSalary + s.overtimePay)
+    expect(s.totalPay).toBeCloseTo(s.netSalary + s.overtimePay, 10)
+  })
+
+  it("no cambia lo que se entrega: total = bruto + extras − descuentos", () => {
+    const s = withOvertime()
+
+    expect(s.totalPay).toBeCloseTo(
+      s.grossSalary + s.overtimePay - s.totalDeductions + s.manualAdjustment,
+      10,
+    )
+  })
+
+  it("el préstamo se puede cobrar contra las horas extra", () => {
+    // El salario neto solo da 71.20, pero con las extras se entregan 101.20:
+    // una cuota de 90 tiene de dónde salir y se cobra completa.
+    const s = calcEmployeeSummary(
+      employee(),
+      [entry({ entryTime: "07:00", exitTime: "18:00" })],
+      RULES,
+      90,
+    )
+
+    expect(s.loanDeduction).toBe(90)
+    expect(s.totalPay).toBeCloseTo(11.2, 10)
+  })
+
+  it("los totales del período separan salario, extras y lo entregado", () => {
+    const totals = calcTotals([withOvertime()])
+
+    expect(totals.gross).toBe(80)
+    expect(totals.overtimePay).toBe(30)
+    expect(totals.totalPay).toBeCloseTo(totals.net + totals.overtimePay, 10)
+  })
+
+  it("una planilla congelada sin el campo cuenta su neto como lo pagado", () => {
+    const legacy = withOvertime()
+    delete (legacy as { totalPay?: number }).totalPay
+
+    expect(calcTotals([legacy]).totalPay).toBeCloseTo(legacy.netSalary, 10)
   })
 })

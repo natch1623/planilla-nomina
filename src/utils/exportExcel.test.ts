@@ -71,8 +71,8 @@ describe("buildPayrollWorkbook", () => {
 
   it("guarda los montos como número, no como texto", () => {
     const ws = buildPayrollWorkbook(SUMMARIES, PERIOD).Sheets.Planilla
-    // Columna W = "Salario neto", primera fila de datos.
-    const neto = cell(ws, "W2")
+    // Columna X = "Salario neto", primera fila de datos.
+    const neto = cell(ws, "X2")
 
     expect(neto?.t).toBe("n")
     expect(neto?.v).toBeCloseTo(71.2, 10)
@@ -81,7 +81,7 @@ describe("buildPayrollWorkbook", () => {
   it("da formato de moneda a las columnas de dinero", () => {
     const ws = buildPayrollWorkbook(SUMMARIES, PERIOD).Sheets.Planilla
 
-    expect(cell(ws, "W2")?.z).toBe('"$"#,##0.00')
+    expect(cell(ws, "X2")?.z).toBe('"$"#,##0.00')
     expect(cell(ws, "R2")?.z).toBe('"$"#,##0.00') // Salario bruto
   })
 
@@ -92,15 +92,15 @@ describe("buildPayrollWorkbook", () => {
 
   it("no toca el encabezado", () => {
     const ws = buildPayrollWorkbook(SUMMARIES, PERIOD).Sheets.Planilla
-    expect(cell(ws, "W1")?.v).toBe("Salario neto")
-    expect(cell(ws, "W1")?.z).toBeUndefined()
+    expect(cell(ws, "X1")?.v).toBe("Salario neto")
+    expect(cell(ws, "X1")?.z).toBeUndefined()
   })
 
   it("cierra la planilla con la fila de totales", () => {
     const ws = buildPayrollWorkbook(SUMMARIES, PERIOD).Sheets.Planilla
     // Dos colaboradores: fila 2 y 3 de datos, totales en la 4.
     expect(cell(ws, "A4")?.v).toBe("TOTALES")
-    expect(cell(ws, "W4")?.v).toBeCloseTo(142.4, 10)
+    expect(cell(ws, "X4")?.v).toBeCloseTo(142.4, 10)
   })
 
   it("deja la fila de totales fuera del autofiltro", () => {
@@ -120,11 +120,44 @@ describe("buildPayrollWorkbook", () => {
   it("pone moneda solo en las filas de dinero del resumen", () => {
     const ws = buildPayrollWorkbook(SUMMARIES, PERIOD).Sheets.Resumen
 
-    // Fila 15 = "NETO A PAGAR"; fila 3 = "Colaboradores", que es un conteo.
-    expect(cell(ws, "B15")?.z).toBe('"$"#,##0.00')
+    // Fila 17 = "TOTAL A PAGAR"; fila 3 = "Colaboradores", que es un conteo.
+    expect(cell(ws, "B17")?.z).toBe('"$"#,##0.00')
     expect(cell(ws, "B3")?.z).toBeUndefined()
-    expect(cell(ws, "A15")?.v).toBe("NETO A PAGAR")
+    expect(cell(ws, "A17")?.v).toBe("TOTAL A PAGAR")
     expect(cell(ws, "B3")?.v).toBe(2)
+  })
+
+  it("agrega la hoja de asistencia cuando se pasan los registros", () => {
+    const entries = [
+      {
+        id: "e1-t1",
+        employeeId: "e1",
+        date: "2026-08-03",
+        dayType: "trabajo" as const,
+        entryTime: "08:00",
+        exitTime: "17:00",
+        lunchBreak: true,
+        lunchDuration: 60,
+        overtimeRate: 1.5,
+        notes: "Turno completo",
+      },
+    ]
+    const wb = buildPayrollWorkbook(SUMMARIES, PERIOD, entries)
+
+    expect(wb.SheetNames).toContain("Asistencia")
+    const ws = wb.Sheets.Asistencia
+    // Encabezado + 15 días por cada uno de los dos colaboradores.
+    expect(cell(ws, "A2")?.v).toBe("Ana Ruiz")
+    expect(cell(ws, "B4")?.v).toBe("2026-08-03")
+    expect(cell(ws, "E4")?.v).toBe("08:00")
+    expect(cell(ws, "F4")?.v).toBe("17:00")
+    expect(cell(ws, "H4")?.v).toBeCloseTo(8, 10)
+    expect(cell(ws, "D2")?.v).toBe("Sin registro")
+  })
+
+  it("omite la hoja de asistencia si no se pasan registros", () => {
+    const wb = buildPayrollWorkbook(SUMMARIES, PERIOD)
+    expect(wb.SheetNames).not.toContain("Asistencia")
   })
 
   it("no se rompe sin colaboradores", () => {

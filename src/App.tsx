@@ -206,8 +206,16 @@ export default function App() {
         data.currentPeriod,
         rules,
         data.loans,
+        data.manualAdjustments,
       ),
-    [data.employees, data.timeEntries, data.currentPeriod, rules, data.loans],
+    [
+      data.employees,
+      data.timeEntries,
+      data.currentPeriod,
+      rules,
+      data.loans,
+      data.manualAdjustments,
+    ],
   )
 
   // Una quincena cerrada muestra su foto congelada: cambiar una tarifa hoy
@@ -299,7 +307,7 @@ export default function App() {
 
       if (kind === "excel") {
         const { exportToExcel } = await import("./utils/exportExcel")
-        exportToExcel(summaries, data.currentPeriod)
+        exportToExcel(summaries, data.currentPeriod, data.timeEntries)
         push("Excel descargado")
       } else if (kind === "pdf") {
         const { exportToPDF } = await import("./utils/exportPDF")
@@ -307,7 +315,13 @@ export default function App() {
         push("PDF descargado")
       } else {
         const { exportAllPayslips } = await import("./utils/exportPayslip")
-        exportAllPayslips(summaries, data.currentPeriod, data.companyName)
+        exportAllPayslips(
+          summaries,
+          data.currentPeriod,
+          data.companyName,
+          data.timeEntries,
+          data.manualAdjustments,
+        )
         push(`${summaries.length} comprobantes descargados`)
       }
     } catch (err) {
@@ -558,6 +572,7 @@ export default function App() {
             data={data}
             rules={rules}
             onNotify={push}
+            onChange={setData}
           />
         )}
         <Suspense fallback={<TabSkeleton />}>

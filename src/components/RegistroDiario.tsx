@@ -34,6 +34,7 @@ import {
   Card,
   EmptyState,
   Field,
+  IconButton,
   Segmented,
   Toggle,
   inputClass,
@@ -106,7 +107,9 @@ function blankEntry(
     exitTime: planned?.exitTime || template?.exitTime || "17:00",
     lunchBreak: planned?.lunchBreak ?? template?.lunchBreak ?? true,
     lunchDuration: planned?.lunchDuration ?? template?.lunchDuration ?? 60,
-    overtimeRate: template?.overtimeRate ?? 1.5,
+    // Sin recargo por omisión: una hora extra se paga igual que una regular
+    // salvo que se elija otro multiplicador a mano.
+    overtimeRate: template?.overtimeRate ?? 1,
     notes: "",
   }
 }
@@ -128,7 +131,7 @@ export default function RegistroDiario({
     [employees],
   )
 
-  const [view, setView] = useState<"grid" | "day">(() =>
+  const [view, setView] = useState<"grid" | "day" | "employee">(() =>
     typeof window !== "undefined" &&
     window.matchMedia("(max-width: 767px)").matches
       ? "day"
@@ -144,11 +147,22 @@ export default function RegistroDiario({
     const today = todayISO()
     return today >= start && today <= end ? today : start
   })
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState("")
 
   useEffect(() => {
     // Al cambiar de quincena el día seleccionado debe caer dentro del nuevo rango.
     setSelectedDate((d) => (d >= start && d <= end ? d : start))
   }, [start, end])
+
+  useEffect(() => {
+    // El colaborador elegido puede desactivarse o borrarse desde otra pestaña;
+    // sin este ajuste la vista se quedaría mirando a alguien que ya no está.
+    setSelectedEmployeeId((id) =>
+      activeEmployees.some((e) => e.id === id)
+        ? id
+        : (activeEmployees[0]?.id ?? ""),
+    )
+  }, [activeEmployees])
 
   const entryMap = useMemo(() => {
     const m = new Map<string, TimeEntry>()
@@ -186,6 +200,20 @@ export default function RegistroDiario({
     const existing = getEntry(employeeId, date)
     if (existing) onChange(entries.filter((e) => e.id !== existing.id))
     setTarget(null)
+  }
+
+  /**
+   * Crea el registro de un día con los valores que ya se pueden deducir
+   * —horario habitual, o el último día trabajado— sin abrir el editor.
+   *
+   * Es lo que hace útil la vista por colaborador: recorrer la quincena de un
+   * tirón sin un diálogo por día. Lo fino (almuerzo, recargo, nota) sigue
+   * estando en el editor completo.
+   */
+  function createEntry(employeeId: string, date: string) {
+    const emp = activeEmployees.find((e) => e.id === employeeId)
+    if (!emp) return
+    saveEntry(blankEntry(emp, date, previousEntry(employeeId, date)))
   }
 
   function handleFill(opts: FillOptions) {
@@ -232,7 +260,7 @@ export default function RegistroDiario({
         days: summary.daysWorked,
         hours: summary.regularHours + summary.overtimeHours,
         overtime: summary.overtimeHours,
-        pay: summary.netSalary,
+        pay: summary.totalPay,
       })
     }
     return map
@@ -279,6 +307,11 @@ export default function RegistroDiario({
                 label: <Icon name="list" className="w-4 h-4" />,
                 title: "Vista por día",
               },
+              {
+                value: "employee",
+                label: <Icon name="users" className="w-4 h-4" />,
+                title: "Vista por colaborador",
+              },
             ]}
           />
           {!readOnly && (
@@ -309,7 +342,7 @@ export default function RegistroDiario({
           onFillRow={(id) => setFillFor([id])}
           onClearRow={clearRow}
         />
-      ) : (
+      ) : view === "day" ? (
         <DayView
           employees={activeEmployees}
           dates={dates}
@@ -321,6 +354,25 @@ export default function RegistroDiario({
           onOpen={(employeeId, date) =>
             setTarget({ employeeId, date, rect: null })
           }
+        />
+      ) : (
+        <EmployeeView
+          employees={activeEmployees}
+          selectedId={selectedEmployeeId}
+          onSelect={setSelectedEmployeeId}
+          dates={dates}
+          getEntry={getEntry}
+          totals={totalsFor.get(selectedEmployeeId)}
+          rules={rules}
+          readOnly={readOnly}
+          onOpen={(employeeId, date) =>
+            setTarget({ employeeId, date, rect: null })
+          }
+          onCreate={createEntry}
+          onUpdate={saveEntry}
+          onDelete={deleteEntry}
+          onFill={(id) => setFillFor([id])}
+          onClear={clearRow}
         />
       )}
 
@@ -840,6 +892,303 @@ function DayView({
                     )}
                   </span>
                 </button>
+              </li>
+            )
+          })}
+        </ul>
+      </Card>
+    </div>
+  )
+}
+
+/* -------------------------------------------------- Vista por colaborador */
+
+interface EmployeeViewProps {
+  employees: Employee[]
+  selectedId: string
+  onSelect: (id: string) => void
+  dates: string[]
+  getEntry: (employeeId: string, date: string) => TimeEntry | null
+  totals: RowTotals | undefined
+  rules: PayrollRules
+  readOnly: boolean
+  onOpen: (employeeId: string, date: string) => void
+  onCreate: (employeeId: string, date: string) => void
+  onUpdate: (entry: TimeEntry) => void
+  onDelete: (employeeId: string, date: string) => void
+  onFill: (employeeId: string) => void
+  onClear: (employeeId: string) => void
+}
+
+/**
+ * Un colaborador, la quincena completa, editable en la misma fila.
+ *
+ * La cuadrícula sirve para ver a todo el equipo de un vistazo y la vista por
+ * día para pasar lista, pero ninguna sirve para sentarse a cargar el mes de una
+ * persona: eso obligaba a abrir un diálogo por cada día. Aquí la entrada y la
+ * salida se escriben directo en la fila y se guardan al momento; el editor
+ * completo sigue a un clic para el almuerzo, el recargo o una nota.
+ */
+function EmployeeView({
+  employees,
+  selectedId,
+  onSelect,
+  dates,
+  getEntry,
+  totals,
+  rules,
+  readOnly,
+  onOpen,
+  onCreate,
+  onUpdate,
+  onDelete,
+  onFill,
+  onClear,
+}: EmployeeViewProps) {
+  const today = todayISO()
+  const index = employees.findIndex((e) => e.id === selectedId)
+  const employee = employees[index]
+
+  if (!employee) return null
+
+  // Por día y salario fijo no pagan por hora: pedir entrada y salida ahí solo
+  // agrega ruido, igual que en la vista por día.
+  const hidesHours =
+    employee.paymentType === "daily" || employee.paymentType === "fixed"
+  const registered = dates.filter((d) => getEntry(employee.id, d)).length
+
+  return (
+    <div className="space-y-3">
+      {/* Selector y resumen del colaborador */}
+      <Card>
+        <div className="flex flex-wrap items-center gap-3">
+          <span
+            className={`w-10 h-10 rounded-full shrink-0 grid place-items-center text-white text-sm font-bold ${
+              employee.category === "profesional" ? "bg-violet" : "bg-ok"
+            }`}
+          >
+            {initials(employee.name)}
+          </span>
+
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            <button
+              onClick={() => onSelect(employees[index - 1].id)}
+              disabled={index <= 0}
+              aria-label="Colaborador anterior"
+              className="p-1.5 rounded-lg text-muted hover:bg-raised disabled:opacity-30 disabled:hover:bg-transparent"
+            >
+              <Icon name="chevronLeft" className="w-4 h-4" />
+            </button>
+            <select
+              value={selectedId}
+              onChange={(e) => onSelect(e.target.value)}
+              aria-label="Colaborador"
+              className={`${inputClass} font-semibold min-w-0 flex-1`}
+            >
+              {employees.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.name}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => onSelect(employees[index + 1].id)}
+              disabled={index >= employees.length - 1}
+              aria-label="Colaborador siguiente"
+              className="p-1.5 rounded-lg text-muted hover:bg-raised disabled:opacity-30 disabled:hover:bg-transparent"
+            >
+              <Icon name="chevronRight" className="w-4 h-4" />
+            </button>
+          </div>
+
+          {!readOnly && (
+            <div className="flex items-center gap-2">
+              <Button size="sm" icon="bolt" onClick={() => onFill(employee.id)}>
+                Llenado rápido
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => onClear(employee.id)}
+                className="text-danger hover:bg-danger-soft"
+              >
+                Vaciar
+              </Button>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+          {[
+            { label: "Días registrados", value: `${registered}/${dates.length}` },
+            { label: "Días pagados", value: String(totals?.days ?? 0) },
+            { label: "Horas", value: fmtHours(totals?.hours ?? 0) },
+            { label: "Neto", value: `$${fmt(totals?.pay ?? 0)}` },
+          ].map((t) => (
+            <div key={t.label} className="rounded-xl bg-raised px-3 py-2">
+              <div className="text-[10px] font-bold text-muted uppercase tracking-wide">
+                {t.label}
+              </div>
+              <div className="text-sm font-bold text-fg font-mono tabular-nums">
+                {t.value}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card padded={false}>
+        <ul>
+          {dates.map((date) => {
+            const entry = getEntry(employee.id, date)
+            const planned = scheduleForDate(employee, date)
+            const schedule = entry ? usesSchedule(entry.dayType) : false
+            const worked = entry && schedule ? calcWorkedHours(entry) : null
+            const isOver =
+              !!worked && !hidesHours && worked.total > rules.overtimeThreshold
+
+            const update = (patch: Partial<TimeEntry>) => {
+              if (entry) onUpdate({ ...entry, ...patch })
+            }
+
+            return (
+              <li
+                key={date}
+                className={`flex items-center gap-3 px-3 py-2 border-b border-line last:border-0 ${
+                  isWeekend(date) ? "bg-weekend" : ""
+                } ${entry ? CELL_BG[entry.dayType] : ""}`}
+              >
+                {/* Día */}
+                <div className="w-12 shrink-0 text-center">
+                  <div
+                    className={`text-sm font-bold font-mono ${
+                      date === today ? "text-brand" : "text-fg"
+                    }`}
+                  >
+                    {dayNum(date)}
+                  </div>
+                  <div className="text-[10px] text-muted">{dayName(date)}</div>
+                </div>
+
+                {/* Registro */}
+                {!entry ? (
+                  <div className="flex-1 flex items-center gap-2 min-w-0">
+                    <span className="text-xs text-subtle truncate">
+                      {planned
+                        ? `Sin registro · habitual ${planned.entryTime}–${planned.exitTime}`
+                        : "Sin registro · día libre según su horario"}
+                    </span>
+                    {!readOnly && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon="plus"
+                        className="ml-auto"
+                        onClick={() => onCreate(employee.id, date)}
+                      >
+                        Registrar
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex-1 flex flex-wrap items-center gap-2 min-w-0">
+                    <select
+                      value={entry.dayType}
+                      disabled={readOnly}
+                      onChange={(e) =>
+                        update({ dayType: e.target.value as DayType })
+                      }
+                      aria-label={`Tipo de día ${dayNum(date)}`}
+                      className={`${inputClass} w-auto py-1 text-xs font-semibold ${
+                        CELL_FG[entry.dayType]
+                      }`}
+                    >
+                      {DAY_TYPES.map((t) => (
+                        <option key={t} value={t}>
+                          {DAY_TYPE_META[t].label}
+                        </option>
+                      ))}
+                    </select>
+
+                    {schedule && !hidesHours ? (
+                      <>
+                        <input
+                          type="time"
+                          value={entry.entryTime}
+                          disabled={readOnly}
+                          onChange={(e) => update({ entryTime: e.target.value })}
+                          aria-label={`Entrada ${dayNum(date)}`}
+                          className={`${inputNumClass} w-auto py-1 text-xs`}
+                        />
+                        <span className="text-subtle text-xs">→</span>
+                        <input
+                          type="time"
+                          value={entry.exitTime}
+                          disabled={readOnly}
+                          onChange={(e) => update({ exitTime: e.target.value })}
+                          aria-label={`Salida ${dayNum(date)}`}
+                          className={`${inputNumClass} w-auto py-1 text-xs`}
+                        />
+                        {entry.lunchBreak && entry.lunchDuration > 0 && (
+                          <span className="text-[10px] text-muted">
+                            −{entry.lunchDuration}m
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-xs text-muted">
+                        {hidesHours && schedule
+                          ? employee.paymentType === "daily"
+                            ? "Tarifa fija del día"
+                            : "Incluido en el salario fijo"
+                          : "Día completo"}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Resultado y acciones */}
+                <div className="shrink-0 flex items-center gap-1.5">
+                  {worked?.invalid ? (
+                    <span className="text-[10px] font-bold text-danger">
+                      Revisa la hora
+                    </span>
+                  ) : worked && worked.total > 0 && !hidesHours ? (
+                    <span className="text-right">
+                      <span className="block text-xs font-mono font-bold text-fg">
+                        {fmtHours(worked.total)}
+                      </span>
+                      {isOver && (
+                        <span className="block text-[10px] font-bold text-amber">
+                          +extra
+                        </span>
+                      )}
+                    </span>
+                  ) : null}
+                  {worked?.crossesMidnight && (
+                    <span
+                      title="Turno nocturno: la salida se cuenta al día siguiente"
+                      className="text-violet text-xs font-bold"
+                    >
+                      ↷
+                    </span>
+                  )}
+                  {entry && !readOnly && (
+                    <>
+                      <IconButton
+                        icon="edit"
+                        label={`Editar el día ${dayNum(date)}`}
+                        onClick={() => onOpen(employee.id, date)}
+                      />
+                      <IconButton
+                        icon="trash"
+                        tone="danger"
+                        label={`Borrar el día ${dayNum(date)}`}
+                        onClick={() => onDelete(employee.id, date)}
+                      />
+                    </>
+                  )}
+                </div>
               </li>
             )
           })}

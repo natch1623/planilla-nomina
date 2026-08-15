@@ -1,8 +1,20 @@
 import jsPDF from "jspdf"
 import autoTable from "jspdf-autotable"
-import type { EmployeeSummary, PayPeriod } from "../types"
+import type {
+  EmployeeSummary,
+  PayPeriod,
+  PayrollAdjustment,
+  TimeEntry,
+} from "../types"
 import { MONTHS_ES, getPeriodDates } from "../store"
-import { DAY_TYPE_META, DAY_TYPES, fmt, fmtHours } from "./calculations"
+import {
+  adjustmentsForPeriod,
+  DAY_TYPE_META,
+  DAY_TYPES,
+  fmt,
+  fmtHours,
+} from "./calculations"
+import { attendanceRows } from "./attendance"
 import { formatDate } from "./dates"
 
 /* Marcas diacríticas combinantes. Se construye desde una cadena ASCII para que
@@ -13,6 +25,8 @@ const NAVY: [number, number, number] = [22, 36, 61]
 const MUTED: [number, number, number] = [100, 116, 139]
 const LINE: [number, number, number] = [225, 231, 240]
 const GREEN: [number, number, number] = [14, 159, 110]
+const RED: [number, number, number] = [190, 45, 55]
+const AMBER: [number, number, number] = [194, 104, 10]
 
 function periodTitle(period: PayPeriod): string {
   return `${MONTHS_ES[period.month - 1]} ${period.year} — ${
@@ -30,6 +44,132 @@ function fileSlug(name: string): string {
 }
 
 /**
+ * Asistencia día por día, ajustada al hueco que queda en la página.
+ *
+ * El comprobante tiene que caber en una hoja —es lo que se firma y se
+ * archiva—, así que la tabla no elige su tamaño: recibe el espacio disponible
+ * y calcula el tipo de letra que hace entrar sus filas. Solo si ni con el
+ * mínimo legible alcanza, se deja que continúe en otra página en vez de
+ * recortar días.
+ *
+ * Devuelve la Y donde terminó el bloque.
+ */
+function drawAttendance(
+  doc: jsPDF,
+  rows: string[][],
+  totalHours: number,
+  y: number,
+  available: number,
+  M: number,
+  W: number,
+): number {
+  const inner = W - M * 2
+
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(8)
+  doc.setTextColor(...NAVY)
+  doc.text("Asistencia día por día", M, y)
+  doc.setFont("helvetica", "normal")
+  doc.setFontSize(6.4)
+  doc.setTextColor(...MUTED)
+  doc.text(
+    `Total ${fmtHours(totalHours)} · horas netas (almuerzo descontado)`,
+    W - M,
+    y,
+    { align: "right" },
+  )
+  y += 2.5
+
+  /**
+   * Elige el mayor tipo de letra con el que la tabla entera entra en el hueco.
+   *
+   * No basta con dividir el alto entre el número de días: la columna de
+   * detalle puede partirse en dos renglones y ese desbordamiento es justo el
+   * que empujaría el comprobante a una segunda hoja. Por eso se mide el texto
+   * real de cada fila —con la misma función que usa la tabla al dibujar— en vez
+   * de suponer un renglón por día. Se prefiere achicar el relleno antes que la
+   * letra: apretar el interlineado se nota menos que perder cuerpo.
+   */
+  const budget = available - 2.5
+  const detailWidth = inner * 0.49
+  let fontSize = 7
+  let padding = 1.4
+
+  outer: for (const fs of [7, 6.6, 6.2, 5.8, 5.4, 5.2]) {
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(fs)
+    const lineH = (fs * 1.15) / 2.8346
+    for (const pad of [1.4, 1.1, 0.9, 0.7, 0.55]) {
+      const lines = rows.reduce(
+        (sum, r) =>
+          sum +
+          Math.max(1, doc.splitTextToSize(r[5], detailWidth - pad * 2).length),
+        1, // el encabezado
+      )
+      const height = lines * lineH + (rows.length + 1) * pad * 2
+      if (height <= budget) {
+        fontSize = fs
+        padding = pad
+        break outer
+      }
+      // Con el cuerpo más chico y el relleno mínimo ya no hay de dónde recortar:
+      // la asistencia se derrama a otra hoja antes que perder días.
+      if (fs === 5.2 && pad === 0.55) {
+        fontSize = fs
+        padding = pad
+      }
+    }
+  }
+
+  autoTable(doc, {
+    startY: y,
+    head: [["Día", "Tipo", "Entrada", "Salida", "Horas", "Detalle"]],
+    body: rows,
+    theme: "grid",
+    headStyles: {
+      fillColor: NAVY,
+      textColor: 255,
+      fontSize,
+      fontStyle: "bold",
+      cellPadding: padding,
+    },
+    bodyStyles: {
+      fontSize,
+      textColor: NAVY,
+      lineColor: LINE,
+      cellPadding: padding,
+    },
+    alternateRowStyles: { fillColor: [250, 251, 253] },
+    columnStyles: {
+      0: { cellWidth: inner * 0.1 },
+      1: { cellWidth: inner * 0.12 },
+      2: { cellWidth: inner * 0.1, halign: "center" },
+      3: { cellWidth: inner * 0.1, halign: "center" },
+      4: { cellWidth: inner * 0.09, halign: "right" },
+      5: { cellWidth: "auto", textColor: MUTED },
+    },
+    // Un día sin marcación se atenúa entero: se distingue de un día trabajado
+    // sin tener que leer la columna de tipo.
+    didParseCell: (d) => {
+      const raw = d.row.raw as unknown
+      if (d.section !== "body" || !Array.isArray(raw)) return
+      if (raw[1] === "Sin registro") d.cell.styles.textColor = MUTED
+    },
+    // El margen inferior es el mismo límite con el que se repartió el espacio:
+    // si no coincidieran, la tabla podría saltar de página creyendo que no cabe
+    // —o peor, pisar las firmas.
+    margin: {
+      left: M,
+      right: M,
+      top: 14,
+      bottom: doc.internal.pageSize.getHeight() - (y + available - 2.5),
+    },
+  })
+
+  return (doc as any).lastAutoTable.finalY
+}
+
+/**
  * Dibuja un comprobante en la página actual del documento.
  * Se separa de la exportación para poder encadenar varios en un solo PDF.
  */
@@ -38,42 +178,47 @@ function drawPayslip(
   s: EmployeeSummary,
   period: PayPeriod,
   companyName: string,
+  entries?: TimeEntry[],
+  adjustments: PayrollAdjustment[] = [],
 ): void {
   const W = doc.internal.pageSize.getWidth()
-  const M = 16
+  const M = 14
   const { start, end } = getPeriodDates(period)
   const emp = s.employee
+  // Al encadenar comprobantes cada uno arranca en su propia hoja; hay que
+  // recordarla para volver a firmar sobre ella al final.
+  const firstPage = doc.getNumberOfPages()
 
   // Encabezado
   doc.setFillColor(...NAVY)
-  doc.rect(0, 0, W, 26, "F")
+  doc.rect(0, 0, W, 22, "F")
   doc.setTextColor(255, 255, 255)
   doc.setFont("helvetica", "bold")
-  doc.setFontSize(13)
-  doc.text("COMPROBANTE DE PAGO", M, 12)
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(8.5)
-  doc.text(periodTitle(period), M, 19)
-  if (companyName) {
-    doc.setFont("helvetica", "bold")
-    doc.setFontSize(10)
-    doc.text(companyName, W - M, 12, { align: "right" })
-  }
+  doc.setFontSize(12)
+  doc.text("COMPROBANTE DE PAGO", M, 10)
   doc.setFont("helvetica", "normal")
   doc.setFontSize(8)
-  doc.text(`${formatDate(start)} – ${formatDate(end)}`, W - M, 19, {
+  doc.text(periodTitle(period), M, 16.5)
+  if (companyName) {
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(9.5)
+    doc.text(companyName, W - M, 10, { align: "right" })
+  }
+  doc.setFont("helvetica", "normal")
+  doc.setFontSize(7.5)
+  doc.text(`${formatDate(start)} – ${formatDate(end)}`, W - M, 16.5, {
     align: "right",
   })
 
   // Datos del colaborador
-  let y = 36
+  let y = 30
   doc.setTextColor(...NAVY)
   doc.setFont("helvetica", "bold")
-  doc.setFontSize(12)
+  doc.setFontSize(11)
   doc.text(emp.name, M, y)
 
   doc.setFont("helvetica", "normal")
-  doc.setFontSize(8.5)
+  doc.setFontSize(7.5)
   doc.setTextColor(...MUTED)
   const facts: [string, string][] = [
     ["Cédula", emp.idNumber || "—"],
@@ -92,19 +237,21 @@ function drawPayslip(
     ["Ingreso", emp.startDate ? formatDate(emp.startDate) : "—"],
     ["Días trabajados", String(s.daysWorked)],
   ]
-  y += 7
+  y += 5.5
   facts.forEach(([k, v], i) => {
     const col = i % 3
     const row = Math.floor(i / 3)
     const x = M + col * ((W - M * 2) / 3)
+    doc.setFontSize(6.2)
     doc.setTextColor(...MUTED)
-    doc.text(k.toUpperCase(), x, y + row * 11)
+    doc.text(k.toUpperCase(), x, y + row * 8.5)
+    doc.setFontSize(8)
     doc.setTextColor(...NAVY)
     doc.setFont("helvetica", "bold")
-    doc.text(v, x, y + row * 11 + 5)
+    doc.text(v, x, y + row * 8.5 + 4)
     doc.setFont("helvetica", "normal")
   })
-  y += 26
+  y += 18
 
   // Ingresos
   const earnings: (string | number)[][] = [
@@ -114,13 +261,6 @@ function drawPayslip(
       `$${fmt(s.regularPay)}`,
     ],
   ]
-  if (s.overtimePay > 0) {
-    earnings.push([
-      "Horas extra",
-      fmtHours(s.overtimeHours),
-      `$${fmt(s.overtimePay)}`,
-    ])
-  }
   if (s.holidayPay > 0) {
     earnings.push([
       "Recargo por día feriado",
@@ -128,7 +268,7 @@ function drawPayslip(
       `$${fmt(s.holidayPay)}`,
     ])
   }
-  earnings.push(["Total ingresos", "", `$${fmt(s.grossSalary)}`])
+  earnings.push(["Salario bruto", "", `$${fmt(s.grossSalary)}`])
 
   autoTable(doc, {
     startY: y,
@@ -138,10 +278,16 @@ function drawPayslip(
     headStyles: {
       fillColor: NAVY,
       textColor: 255,
-      fontSize: 8.5,
+      fontSize: 7.5,
       fontStyle: "bold",
+      cellPadding: 1.3,
     },
-    bodyStyles: { fontSize: 9, textColor: NAVY, lineColor: LINE },
+    bodyStyles: {
+      fontSize: 8,
+      textColor: NAVY,
+      lineColor: LINE,
+      cellPadding: 1.3,
+    },
     columnStyles: {
       1: { halign: "right", cellWidth: 28 },
       2: { halign: "right", cellWidth: 34 },
@@ -189,10 +335,16 @@ function drawPayslip(
     headStyles: {
       fillColor: NAVY,
       textColor: 255,
-      fontSize: 8.5,
+      fontSize: 7.5,
       fontStyle: "bold",
+      cellPadding: 1.3,
     },
-    bodyStyles: { fontSize: 9, textColor: NAVY, lineColor: LINE },
+    bodyStyles: {
+      fontSize: 8,
+      textColor: NAVY,
+      lineColor: LINE,
+      cellPadding: 1.3,
+    },
     columnStyles: { 1: { halign: "right", cellWidth: 34 } },
     didParseCell: (d) => {
       if (d.section === "body" && d.row.index === deductions.length - 1) {
@@ -203,70 +355,200 @@ function drawPayslip(
     margin: { left: M, right: M },
   })
 
-  // Neto
-  y = (doc as any).lastAutoTable.finalY + 8
-  doc.setFillColor(...NAVY)
-  doc.roundedRect(M, y, W - M * 2, 18, 2, 2, "F")
-  doc.setTextColor(255, 255, 255)
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(10)
-  doc.text("NETO A PAGAR", M + 6, y + 11.5)
-  doc.setFontSize(15)
-  doc.setTextColor(...GREEN)
-  doc.text(`$${fmt(s.netSalary)}`, W - M - 6, y + 12, { align: "right" })
+  const manualAdjustments = adjustmentsForPeriod(
+    s.employee.id,
+    period,
+    adjustments,
+  )
+  // El neto ya trae el ajuste incorporado: si hay monto pero no llegó el
+  // desglose, igual se declara una línea para que el bruto y el neto cuadren.
+  if (manualAdjustments.length > 0 || (s.manualAdjustment || 0) !== 0) {
+    y = (doc as any).lastAutoTable.finalY + 6
+    const adjustmentRows = manualAdjustments.map((adj) => [
+      adj.kind === "bono" ? "Bono manual" : "Descuento manual",
+      adj.note || "—",
+      adj.kind === "bono"
+        ? `+$${fmt(adj.amount)}`
+        : `-$${fmt(adj.amount)}`,
+    ])
+    // El total sale del cálculo y no de la suma de las filas: si un descuento
+    // fue mayor que el neto disponible, se aplicó recortado y el comprobante
+    // tiene que mostrar lo que de verdad se descontó.
+    const appliedTotal = s.manualAdjustment || 0
+    if (adjustmentRows.length === 0) {
+      adjustmentRows.push([
+        appliedTotal > 0 ? "Bono manual" : "Descuento manual",
+        "Registrado en la planilla",
+        appliedTotal > 0
+          ? `+$${fmt(appliedTotal)}`
+          : `-$${fmt(Math.abs(appliedTotal))}`,
+      ])
+    }
+    adjustmentRows.push([
+      "Total ajustes aplicados",
+      "",
+      appliedTotal < 0
+        ? `-$${fmt(Math.abs(appliedTotal))}`
+        : `+$${fmt(appliedTotal)}`,
+    ])
 
-  // Detalle de días
-  y += 26
-  const dayRows = DAY_TYPES.filter((t) => s.dayCounts[t] > 0).map((t) => [
-    DAY_TYPE_META[t].label,
-    String(s.dayCounts[t]),
-  ])
-  if (dayRows.length > 0) {
     autoTable(doc, {
       startY: y,
-      head: [["Detalle de días", "Cantidad"]],
-      body: dayRows,
-      theme: "plain",
-      headStyles: { textColor: MUTED, fontSize: 8, fontStyle: "bold" },
-      bodyStyles: { fontSize: 8.5, textColor: NAVY },
-      columnStyles: { 1: { halign: "right", cellWidth: 24 } },
-      margin: { left: M, right: W / 2 },
+      head: [["Ajustes manuales", "Nota", "Monto"]],
+      body: adjustmentRows,
+      theme: "grid",
+      headStyles: {
+        fillColor: NAVY,
+        textColor: 255,
+        fontSize: 7.5,
+        fontStyle: "bold",
+        cellPadding: 1.3,
+      },
+      bodyStyles: {
+        fontSize: 8,
+        textColor: NAVY,
+        lineColor: LINE,
+        cellPadding: 1.3,
+      },
+      columnStyles: {
+        2: { halign: "right", cellWidth: 28 },
+      },
+      didParseCell: (d) => {
+        if (d.section !== "body") return
+        if (d.row.index === adjustmentRows.length - 1) {
+          d.cell.styles.fontStyle = "bold"
+          d.cell.styles.fillColor = [246, 248, 252]
+        }
+        const raw = d.row.raw as unknown
+        if (!Array.isArray(raw)) return
+        if (raw[0] === "Descuento manual") d.cell.styles.textColor = RED
+        if (raw[0] === "Bono manual") d.cell.styles.textColor = GREEN
+      },
+      margin: { left: M, right: M },
     })
-    y = (doc as any).lastAutoTable.finalY
   }
 
-  // Firmas
-  const signY = Math.max(y + 26, doc.internal.pageSize.getHeight() - 34)
+  // Cierre del pago: el neto del salario, las horas extra —que se pagan
+  // aparte del sueldo— y el total que se entrega.
+  y = (doc as any).lastAutoTable.finalY + 5
+  const inner = W - M * 2
+  const boxW = (inner - 4) / 2
+
+  doc.setDrawColor(...LINE)
+  doc.setLineWidth(0.3)
+  doc.roundedRect(M, y, boxW, 14, 2, 2, "S")
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(7)
+  doc.setTextColor(...MUTED)
+  doc.text("SALARIO NETO", M + 4, y + 5.5)
+  doc.text(
+    s.overtimeHours > 0
+      ? `HORAS EXTRA (${fmtHours(s.overtimeHours)})`
+      : "HORAS EXTRA",
+    M + boxW / 2 + 4,
+    y + 5.5,
+  )
+  doc.setFontSize(10)
+  doc.setTextColor(...NAVY)
+  doc.text(`$${fmt(s.netSalary)}`, M + 4, y + 11)
+  doc.setTextColor(...(s.overtimePay > 0 ? AMBER : MUTED))
+  doc.text(`$${fmt(s.overtimePay)}`, M + boxW / 2 + 4, y + 11)
+
+  doc.setFillColor(...NAVY)
+  doc.roundedRect(M + boxW + 4, y, boxW, 14, 2, 2, "F")
+  doc.setTextColor(255, 255, 255)
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(9)
+  doc.text("TOTAL A PAGAR", M + boxW + 9, y + 9)
+  doc.setFontSize(13)
+  doc.setTextColor(...GREEN)
+  doc.text(`$${fmt(s.totalPay)}`, W - M - 5, y + 9.5, { align: "right" })
+  y += 14
+
+  // Detalle de días: en una línea y no en tabla. Es el mismo dato —el conteo
+  // por tipo— en una fracción del alto, y ese alto es el que necesita la
+  // asistencia para caber debajo.
+  const dayParts = DAY_TYPES.filter((t) => s.dayCounts[t] > 0).map(
+    (t) => `${DAY_TYPE_META[t].label} ${s.dayCounts[t]}`,
+  )
+  if (dayParts.length > 0) {
+    y += 4.5
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(6.4)
+    doc.setTextColor(...MUTED)
+    doc.text("DETALLE DE DÍAS", M, y)
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(7.5)
+    doc.setTextColor(...NAVY)
+    doc.text(dayParts.join("   ·   "), M + 30, y)
+  }
+
+  const pageH = doc.internal.pageSize.getHeight()
+  const signY = pageH - 26
+
+  // Asistencia día por día, en el hueco que queda entre el neto y las firmas.
+  if (entries) {
+    const { rows, totalHours } = attendanceRows(entries, emp.id, start, end)
+    if (rows.length > 0) {
+      drawAttendance(doc, rows, totalHours, y + 6, signY - 8 - (y + 6), M, W)
+    }
+  }
+
+  // Firmas: siempre al pie de la hoja del comprobante, aunque una asistencia
+  // excepcionalmente larga se haya derramado a una página extra.
+  doc.setPage(firstPage)
   doc.setDrawColor(...MUTED)
   doc.setLineWidth(0.3)
   const half = (W - M * 2 - 20) / 2
   doc.line(M, signY, M + half, signY)
   doc.line(W - M - half, signY, W - M, signY)
-  doc.setFontSize(8)
+  doc.setFontSize(7.5)
   doc.setTextColor(...MUTED)
   doc.setFont("helvetica", "normal")
-  doc.text("Recibí conforme — colaborador", M, signY + 5)
-  doc.text("Autorizado por", W - M - half, signY + 5)
+  doc.text("Recibí conforme — colaborador", M, signY + 4.5)
+  doc.text("Autorizado por", W - M - half, signY + 4.5)
   doc.setFontSize(7)
   doc.text(
     `Generado el ${new Date().toLocaleDateString("es-PA")}`,
     W - M,
-    doc.internal.pageSize.getHeight() - 8,
+    pageH - 8,
     { align: "right" },
   )
+  // El siguiente comprobante debe añadirse al final, no detrás de esta hoja.
+  doc.setPage(doc.getNumberOfPages())
+}
+
+/**
+ * Arma el comprobante sin escribirlo. Separado de la descarga para poder
+ * verificar en pruebas que sigue cabiendo en una sola hoja, que es lo que no
+ * se nota al mirar el archivo por encima.
+ */
+export function buildPayslipDoc(
+  s: EmployeeSummary,
+  period: PayPeriod,
+  companyName = "",
+  entries?: TimeEntry[],
+  adjustments: PayrollAdjustment[] = [],
+): jsPDF {
+  const doc = new jsPDF({
+    orientation: "portrait",
+    format: "letter",
+    unit: "mm",
+  })
+  drawPayslip(doc, s, period, companyName, entries, adjustments)
+  return doc
 }
 
 export function exportPayslip(
   s: EmployeeSummary,
   period: PayPeriod,
   companyName = "",
+  /** Registros del período; sin ellos se omite el detalle de asistencia. */
+  entries?: TimeEntry[],
+  /** Ajustes manuales del período; sin ellos se omite el detalle de bonos/descuentos. */
+  adjustments: PayrollAdjustment[] = [],
 ): void {
-  const doc = new jsPDF({
-    orientation: "portrait",
-    format: "letter",
-    unit: "mm",
-  })
-  drawPayslip(doc, s, period, companyName)
+  const doc = buildPayslipDoc(s, period, companyName, entries, adjustments)
   doc.save(
     `comprobante_${fileSlug(s.employee.name)}_${period.year}_${String(period.month).padStart(2, "0")}_q${period.half}.pdf`,
   )
@@ -276,6 +558,10 @@ export function exportAllPayslips(
   summaries: EmployeeSummary[],
   period: PayPeriod,
   companyName = "",
+  /** Registros del período; sin ellos se omite el detalle de asistencia. */
+  entries?: TimeEntry[],
+  /** Ajustes manuales del período; sin ellos se omite el detalle de bonos/descuentos. */
+  adjustments: PayrollAdjustment[] = [],
 ): void {
   const doc = new jsPDF({
     orientation: "portrait",
@@ -284,7 +570,7 @@ export function exportAllPayslips(
   })
   summaries.forEach((s, i) => {
     if (i > 0) doc.addPage()
-    drawPayslip(doc, s, period, companyName)
+    drawPayslip(doc, s, period, companyName, entries, adjustments)
   })
   doc.save(
     `comprobantes_${period.year}_${String(period.month).padStart(2, "0")}_q${period.half}.pdf`,

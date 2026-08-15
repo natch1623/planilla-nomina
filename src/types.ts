@@ -72,6 +72,19 @@ export interface ClosedPeriod {
   summaries: EmployeeSummary[]
 }
 
+export type PayrollAdjustmentKind = "bono" | "descuento"
+
+/** Ajuste manual de nómina aplicado a un colaborador en una quincena. */
+export interface PayrollAdjustment {
+  id: string
+  employeeId: string
+  periodKey: string // `${year}-${month}-${half}`
+  kind: PayrollAdjustmentKind
+  amount: number
+  note: string
+  createdAt: string // ISO timestamp
+}
+
 export interface AppData {
   employees: Employee[]
   timeEntries: TimeEntry[]
@@ -83,6 +96,7 @@ export interface AppData {
   payHolidays: boolean // ¿se paga el feriado no trabajado?
   paySickLeave: boolean // ¿el patrono paga la incapacidad? (en Panamá suele pagarla la CSS)
   closedPeriods: ClosedPeriod[]
+  manualAdjustments: PayrollAdjustment[]
   transactions: Transaction[]
   counterparties: Counterparty[]
   budgets: Budget[]
@@ -213,12 +227,36 @@ export interface EmployeeSummary {
   regularPay: number // base imponible (horas regulares + días pagados)
   overtimePay: number // pago de extras (sin descuentos)
   holidayPay: number // recargo por trabajar en feriado (sin descuentos)
-  grossSalary: number // regularPay + overtimePay + holidayPay
+  /**
+   * Salario bruto del período: `regularPay + holidayPay`.
+   *
+   * Las horas extra quedan FUERA a propósito: son un pago aparte que se informa
+   * y se entrega junto con el salario, pero no forma parte del sueldo. Mezclarlas
+   * aquí hacía que el bruto de una quincena con muchas extras no se pudiera
+   * comparar con el de otra.
+   */
+  grossSalary: number
   socialSecurityDeduction: number // solo sobre regularPay
   educationDeduction: number // solo sobre regularPay
   loanDeduction: number // cuota de préstamo o adelanto descontada en el período
   totalDeductions: number // seguro social + educativo + préstamo
-  netSalary: number // grossSalary - totalDeductions
+  /**
+   * Bonos (+) y descuentos (−) manuales ya aplicados al neto.
+   *
+   * Se guarda aparte de `totalDeductions` porque no es una retención de ley:
+   * mezclarlo ahí descuadraría el reporte de seguro social. Sin este campo el
+   * neto no se podría explicar desde el bruto en ninguna exportación.
+   */
+  manualAdjustment: number
+  /** Salario neto, sin horas extra: `grossSalary - totalDeductions + manualAdjustment`. */
+  netSalary: number
+  /**
+   * Lo que efectivamente se entrega: `netSalary + overtimePay`.
+   *
+   * Es la única cifra que representa dinero saliendo de caja, así que es la que
+   * usan el flujo de efectivo, la contabilidad y el cierre de planilla.
+   */
+  totalPay: number
   entriesCount: number // días con registro de cualquier tipo
   daysWorked: number // días con horas efectivas
   dayCounts: DayCounts

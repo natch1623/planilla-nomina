@@ -10,6 +10,13 @@ const MUTED: [number, number, number] = [100, 116, 139]
 const GREEN: [number, number, number] = [14, 159, 110]
 const AMBER: [number, number, number] = [194, 104, 10]
 const STRIPE: [number, number, number] = [246, 248, 252]
+const RED: [number, number, number] = [190, 45, 55]
+
+/** Un ajuste manual se lee por su signo: `+` suma al neto, `−` lo recorta. */
+function adjustmentCell(amount = 0): string {
+  if (!amount) return "—"
+  return amount > 0 ? `+$${fmt(amount)}` : `-$${fmt(Math.abs(amount))}`
+}
 
 export function exportToPDF(
   summaries: EmployeeSummary[],
@@ -54,10 +61,24 @@ export function exportToPDF(
   const tiles = [
     { label: "Colaboradores", value: String(summaries.length) },
     { label: "Días trabajados", value: String(totals.days) },
-    { label: "Horas totales", value: fmtHours(totals.hours) },
+    { label: "Horas (reg. + extra)", value: fmtHours(totals.hours) },
     { label: "Salario bruto", value: `$${fmt(totals.gross)}` },
-    { label: "Descuentos", value: `-$${fmt(totals.deductions)}` },
-    { label: "Neto a pagar", value: `$${fmt(totals.net)}` },
+    { label: "Horas extra", value: `$${fmt(totals.overtimePay)}` },
+    // Seguro social y educativo por separado: son dos retenciones distintas y
+    // cada colaborador reclama una u otra, no la suma.
+    { label: "Seguro social", value: `-$${fmt(totals.socialSecurity)}` },
+    { label: "Seguro educativo", value: `-$${fmt(totals.education)}` },
+    // Solo aparece cuando hubo bonos o descuentos manuales: un recuadro en
+    // cero ocuparía el ancho de los demás sin decir nada.
+    ...(totals.adjustments !== 0
+      ? [
+          {
+            label: "Bonos / desc.",
+            value: adjustmentCell(totals.adjustments),
+          },
+        ]
+      : []),
+    { label: "Total a pagar", value: `$${fmt(totals.totalPay)}` },
   ]
   const tileW = (W - M * 2 - (tiles.length - 1) * 2) / tiles.length
   tiles.forEach((tile, i) => {
@@ -97,7 +118,9 @@ export function exportToPDF(
     s.socialSecurityDeduction > 0 ? `$${fmt(s.socialSecurityDeduction)}` : "—",
     s.educationDeduction > 0 ? `$${fmt(s.educationDeduction)}` : "—",
     s.loanDeduction > 0 ? `$${fmt(s.loanDeduction)}` : "—",
+    adjustmentCell(s.manualAdjustment),
     `$${fmt(s.netSalary)}`,
+    `$${fmt(s.totalPay ?? s.netSalary)}`,
   ])
 
   autoTable(doc, {
@@ -118,7 +141,9 @@ export function exportToPDF(
         "Seg. social",
         "Educativo",
         "Préstamo",
-        "NETO",
+        "Bono / desc.",
+        "Neto",
+        "TOTAL",
       ],
     ],
     body,
@@ -138,7 +163,9 @@ export function exportToPDF(
         `$${fmt(totals.socialSecurity)}`,
         `$${fmt(totals.education)}`,
         `$${fmt(totals.loans)}`,
+        adjustmentCell(totals.adjustments),
         `$${fmt(totals.net)}`,
+        `$${fmt(totals.totalPay)}`,
       ],
     ],
     theme: "grid",
@@ -159,12 +186,20 @@ export function exportToPDF(
     },
     alternateRowStyles: { fillColor: STRIPE },
     columnStyles: {
-      0: { cellWidth: 38, halign: "left" },
-      1: { cellWidth: 19, halign: "left" },
-      2: { cellWidth: 17, halign: "left" },
+      0: { cellWidth: 34, halign: "left" },
+      1: { cellWidth: 18, halign: "left" },
+      2: { cellWidth: 16, halign: "left" },
       8: { textColor: AMBER },
       10: { fontStyle: "bold" },
-      14: { fontStyle: "bold", textColor: GREEN },
+      16: { fontStyle: "bold", textColor: GREEN },
+    },
+    // El ajuste manual se pinta por su signo: verde si suma, rojo si recorta.
+    // Un color fijo obligaría a leer el número para saber de qué lado está.
+    didParseCell: (d) => {
+      if (d.column.index !== 14 || d.section !== "body") return
+      const text = String(d.cell.raw ?? "")
+      if (text.startsWith("+")) d.cell.styles.textColor = GREEN
+      else if (text.startsWith("-")) d.cell.styles.textColor = RED
     },
     margin: { left: M, right: M, top: 14 },
     // La cabecera azul solo se dibuja en la primera página; en las siguientes la

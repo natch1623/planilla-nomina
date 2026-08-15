@@ -90,6 +90,9 @@ export default function Configuracion({
       timeEntries: data.timeEntries.filter(
         (e) => e.date < start || e.date > end,
       ),
+      manualAdjustments: data.manualAdjustments.filter(
+        (a) => a.periodKey !== key,
+      ),
     })
     onNotify(
       `${periodEntries.length} registros eliminados de la quincena`,
@@ -323,7 +326,7 @@ export default function Configuracion({
               <p className="text-xs text-muted mt-0.5">
                 Congelada el {new Date(closed.closedAt).toLocaleString("es-PA")}{" "}
                 con {closed.summaries.length} colaboradores y un neto de $
-                {fmt(calcTotals(closed.summaries).net)}. Editar tarifas o
+                {fmt(calcTotals(closed.summaries).totalPay)}. Editar tarifas o
                 registros ya no cambia estos montos.
               </p>
               <Button
@@ -345,7 +348,7 @@ export default function Configuracion({
               <p className="text-xs text-muted mt-0.5">
                 Al cerrarla se guarda una copia del cálculo actual (
                 {liveSummaries.length} colaboradores, neto $
-                {fmt(liveTotals.net)}) y el registro pasa a solo lectura. Es lo
+                {fmt(liveTotals.totalPay)}) y el registro pasa a solo lectura. Es lo
                 que evita que un cambio de tarifa reescriba una planilla ya
                 pagada.
               </p>
@@ -489,7 +492,7 @@ export default function Configuracion({
                 {liveSummaries.length} colaboradores
               </strong>{" "}
               por un neto de{" "}
-              <strong className="text-fg">${fmt(liveTotals.net)}</strong>. El
+              <strong className="text-fg">${fmt(liveTotals.totalPay)}</strong>. El
               registro pasará a solo lectura y los montos dejarán de cambiar.
               Puedes reabrirla después.
             </>

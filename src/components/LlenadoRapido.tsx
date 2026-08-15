@@ -182,7 +182,8 @@ export default function LlenadoRapido({
   const [exitTime, setExitTime] = useState("17:00")
   const [lunchBreak, setLunchBreak] = useState(true)
   const [lunchDuration, setLunchDuration] = useState(60)
-  const [overtimeRate, setOvertimeRate] = useState(1.5)
+  // Igual que en el registro diario: la hora extra arranca sin recargo.
+  const [overtimeRate, setOvertimeRate] = useState(1)
   const [overwrite, setOverwrite] = useState(false)
 
   const hasHours = usesSchedule(dayType)

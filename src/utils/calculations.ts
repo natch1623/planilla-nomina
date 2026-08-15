@@ -5,10 +5,11 @@ import type {
   Employee,
   EmployeeSummary,
   Loan,
+  PayrollAdjustment,
   PayPeriod,
   TimeEntry,
 } from "../types"
-import { getPeriodDates } from "../store"
+import { getPeriodDates, periodKey } from "../store"
 import { loanDeductionFor } from "./loans"
 
 /** Los parámetros de cálculo, separados del resto de AppData. */
@@ -45,6 +46,30 @@ export const DAY_TYPE_META: Record<DayType, {
 }
 
 export const DAY_TYPES = Object.keys(DAY_TYPE_META) as DayType[]
+
+export function adjustmentsForPeriod(
+  employeeId: string,
+  period: PayPeriod,
+  adjustments: PayrollAdjustment[],
+): PayrollAdjustment[] {
+  const key = periodKey(period)
+  return adjustments.filter(
+    (adjustment) =>
+      adjustment.employeeId === employeeId && adjustment.periodKey === key,
+  )
+}
+
+export function adjustmentTotalFor(
+  employeeId: string,
+  period: PayPeriod,
+  adjustments: PayrollAdjustment[],
+): number {
+  return adjustmentsForPeriod(employeeId, period, adjustments).reduce(
+    (sum, adjustment) =>
+      sum + (adjustment.kind === "bono" ? adjustment.amount : -adjustment.amount),
+    0,
+  )
+}
 
 /** Los tipos de día que se registran con horario de entrada y salida. */
 export function usesSchedule(dayType: DayType): boolean {
@@ -157,6 +182,7 @@ export function calcEmployeeSummary(
   entries: TimeEntry[],
   rules: PayrollRules,
   loanDeduction = 0,
+  manualAdjustment = 0,
 )/** Cuota de préstamo del período; se calcula fuera para no acoplar el motor
  *  de horas al de préstamos. */
 : EmployeeSummary {
@@ -249,21 +275,33 @@ export function calcEmployeeSummary(
   // tiene la quincena; el resto de tipos de pago nunca resta.
   regularPay = Math.max(0, regularPay)
 
-  const grossSalary = regularPay + overtimePay + holidayPay
+  // El bruto es el salario del período; las horas extra van por separado
+  // porque son un pago adicional, no parte del sueldo.
+  const grossSalary = regularPay + holidayPay
   // Descuentos solo sobre salario base (horas regulares y días pagados), NO sobre recargos
   const socialSecurityDeduction =
     regularPay * (employee.socialSecurityRate / 100)
   const educationDeduction = regularPay * (employee.educationRate / 100)
 
-  // Un préstamo no puede dejar el neto en negativo: si la cuota supera lo que
-  // queda por pagar, se cobra solo hasta donde alcanza y el resto se arrastra
+  // Un préstamo no puede dejar el pago en negativo: si la cuota supera lo que
+  // queda por entregar, se cobra solo hasta donde alcanza y el resto se arrastra
   // solo, porque el saldo se deriva de lo efectivamente descontado.
-  const afterLegal = grossSalary - socialSecurityDeduction - educationDeduction
+  //
+  // El tope se mide contra TODO lo que se entrega —extras incluidas—, no contra
+  // el bruto: separar las extras del salario es una decisión de presentación y
+  // no puede cambiar cuánto se le alcanza a descontar a nadie.
+  const afterLegal =
+    grossSalary + overtimePay - socialSecurityDeduction - educationDeduction
   const appliedLoan = Math.max(0, Math.min(loanDeduction, afterLegal))
+  const appliedManualAdjustment = Math.max(
+    -(afterLegal - appliedLoan),
+    manualAdjustment,
+  )
 
   const totalDeductions =
     socialSecurityDeduction + educationDeduction + appliedLoan
-  const netSalary = grossSalary - totalDeductions
+  const netSalary = grossSalary - totalDeductions + appliedManualAdjustment
+  const totalPay = netSalary + overtimePay
 
   return {
     employee,
@@ -279,7 +317,9 @@ export function calcEmployeeSummary(
     educationDeduction,
     loanDeduction: appliedLoan,
     totalDeductions,
+    manualAdjustment: appliedManualAdjustment,
     netSalary,
+    totalPay,
     entriesCount: empEntries.length,
     daysWorked,
     dayCounts,
@@ -292,6 +332,7 @@ export function calcPeriodSummaries(
   period: PayPeriod,
   rules: PayrollRules,
   loans: Loan[] = [],
+  adjustments: PayrollAdjustment[] = [],
 ): EmployeeSummary[] {
   const { start, end } = getPeriodDates(period)
   const periodEntries = entries.filter((e) => e.date >= start && e.date <= end)
@@ -303,17 +344,24 @@ export function calcPeriodSummaries(
         periodEntries,
         rules,
         loanDeductionFor(emp.id, period, loans),
+        adjustmentTotalFor(emp.id, period, adjustments),
       ),
     )
 }
 
 export interface PeriodTotals {
+  /** Salario bruto sin horas extra. */
   gross: number
+  /** Salario neto sin horas extra. */
   net: number
+  /** Lo que sale de caja: neto + horas extra. */
+  totalPay: number
   deductions: number
   socialSecurity: number
   education: number
   loans: number
+  /** Neto de bonos menos descuentos manuales; puede quedar negativo. */
+  adjustments: number
   regularPay: number
   overtimePay: number
   holidayPay: number
@@ -328,10 +376,15 @@ export function calcTotals(summaries: EmployeeSummary[]): PeriodTotals {
     (acc, s) => ({
       gross: acc.gross + s.grossSalary,
       net: acc.net + s.netSalary,
+      // Una planilla cerrada antes de separarse las extras no trae el campo:
+      // en ella el neto ya las incluía.
+      totalPay: acc.totalPay + (s.totalPay ?? s.netSalary),
       deductions: acc.deductions + s.totalDeductions,
       socialSecurity: acc.socialSecurity + s.socialSecurityDeduction,
       education: acc.education + s.educationDeduction,
       loans: acc.loans + s.loanDeduction,
+      // Una planilla cerrada antes de existir los ajustes no trae el campo.
+      adjustments: acc.adjustments + (s.manualAdjustment || 0),
       regularPay: acc.regularPay + s.regularPay,
       overtimePay: acc.overtimePay + s.overtimePay,
       holidayPay: acc.holidayPay + s.holidayPay,
@@ -343,10 +396,12 @@ export function calcTotals(summaries: EmployeeSummary[]): PeriodTotals {
     {
       gross: 0,
       net: 0,
+      totalPay: 0,
       deductions: 0,
       socialSecurity: 0,
       education: 0,
       loans: 0,
+      adjustments: 0,
       regularPay: 0,
       overtimePay: 0,
       holidayPay: 0,

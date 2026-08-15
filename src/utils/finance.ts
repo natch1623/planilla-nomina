@@ -541,7 +541,7 @@ function payrollForPeriod(
   period: PayPeriod,
 ): number {
   const closed = data.closedPeriods.find((c) => c.key === periodKey(period))
-  if (closed) return calcTotals(closed.summaries).net
+  if (closed) return calcTotals(closed.summaries).totalPay
 
   const { start, end } = getPeriodDates(period)
   const hasEntries = data.timeEntries.some(
@@ -556,8 +556,9 @@ function payrollForPeriod(
       period,
       rules,
       data.loans,
+      data.manualAdjustments,
     ),
-  ).net
+  ).totalPay
 }
 
 /* ======================================================== Alertas */

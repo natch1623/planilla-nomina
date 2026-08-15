@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import type { Dispatch, ReactNode, SetStateAction } from "react"
 import {
   Bar,
   BarChart,
@@ -10,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-import type { AppData, EmployeeSummary, PayPeriod } from "../types"
+import type { AppData, EmployeeSummary, PayPeriod, PayrollAdjustmentKind } from "../types"
 import type { PayrollRules } from "../utils/calculations"
 import { periodKey, shiftPeriod } from "../store"
 import {
@@ -28,13 +29,18 @@ import TendenciaMensual from "./TendenciaMensual"
 import EstadoResultados from "./EstadoResultados"
 import Icon from "./Icon"
 import {
+  Button,
   Badge,
   Card,
   CardHeader,
   EmptyState,
   IconButton,
+  Modal,
+  Field,
   SectionTitle,
   Segmented,
+  inputClass,
+  inputNumClass,
 } from "./ui"
 import type { Tone } from "./ui"
 
@@ -47,6 +53,7 @@ interface Props {
   data: AppData
   rules: PayrollRules
   onNotify: (text: string, tone?: Tone) => void
+  onChange: Dispatch<SetStateAction<AppData>>
 }
 
 type SortKey = "net" | "hours" | "name"
@@ -59,9 +66,23 @@ export default function Dashboard({
   data,
   rules,
   onNotify,
+  onChange,
 }: Props) {
   const [sort, setSort] = useState<SortKey>("net")
+  const [adjustingId, setAdjustingId] = useState<string | null>(null)
+  const [adjustmentKind, setAdjustmentKind] = useState<PayrollAdjustmentKind>("bono")
+  const [adjustmentAmount, setAdjustmentAmount] = useState("")
+  const [adjustmentNote, setAdjustmentNote] = useState("")
   const totals = useMemo(() => calcTotals(summaries), [summaries])
+  /** Todo lo devengado en la quincena: salario bruto más horas extra. */
+  const earned = totals.gross + totals.overtimePay
+  const periodAdjustments = useMemo(
+    () =>
+      data.manualAdjustments.filter(
+        (a) => a.periodKey === periodKey(period),
+      ),
+    [data.manualAdjustments, period],
+  )
 
   /**
    * Las ocho quincenas que terminan en la actual, para las minigráficas.
@@ -70,7 +91,7 @@ export default function Dashboard({
    * cambia una tarifa, el histórico tiene que seguir mostrando lo que se pagó.
    */
   const history = useMemo(() => {
-    const rows: { net: number; gross: number; hours: number }[] = []
+    const rows: { pay: number; gross: number; hours: number }[] = []
     for (let back = 7; back >= 0; back--) {
       const p = shiftPeriod(period, -back)
       const frozen = data.closedPeriods.find((c) => c.key === periodKey(p))
@@ -82,9 +103,10 @@ export default function Dashboard({
           p,
           rules,
           data.loans,
+          data.manualAdjustments,
         )
       const t = calcTotals(sums)
-      rows.push({ net: t.net, gross: t.gross, hours: t.hours })
+      rows.push({ pay: t.totalPay, gross: t.gross, hours: t.hours })
     }
     return rows
   }, [
@@ -92,6 +114,7 @@ export default function Dashboard({
     data.timeEntries,
     data.closedPeriods,
     data.loans,
+    data.manualAdjustments,
     period,
     rules,
   ])
@@ -103,18 +126,18 @@ export default function Dashboard({
     return values.filter((v) => v > 0).length >= 2 ? values : []
   }
 
-  const netTrend = trendOf((r) => r.net)
+  const payTrend = trendOf((r) => r.pay)
   const grossTrend = trendOf((r) => r.gross)
   const hoursTrend = trendOf((r) => r.hours)
 
   const prof = summaries.filter((s) => s.employee.category === "profesional")
   const emp = summaries.filter((s) => s.employee.category === "empleado")
-  const profTotal = prof.reduce((a, s) => a + s.netSalary, 0)
-  const empTotal = emp.reduce((a, s) => a + s.netSalary, 0)
+  const profTotal = prof.reduce((a, s) => a + s.totalPay, 0)
+  const empTotal = emp.reduce((a, s) => a + s.totalPay, 0)
 
   const sorted = useMemo(() => {
     const copy = [...summaries]
-    if (sort === "net") return copy.sort((a, b) => b.netSalary - a.netSalary)
+    if (sort === "net") return copy.sort((a, b) => b.totalPay - a.totalPay)
     if (sort === "hours")
       return copy.sort(
         (a, b) =>
@@ -129,12 +152,12 @@ export default function Dashboard({
   const barData = useMemo(
     () =>
       [...summaries]
-        .filter((s) => s.netSalary > 0)
-        .sort((a, b) => b.netSalary - a.netSalary)
+        .filter((s) => s.totalPay > 0)
+        .sort((a, b) => b.totalPay - a.totalPay)
         .slice(0, 10)
         .map((s) => ({
           name: s.employee.name.split(" ")[0],
-          neto: +s.netSalary.toFixed(2),
+          neto: +s.totalPay.toFixed(2),
         })),
     [summaries],
   )
@@ -167,13 +190,89 @@ export default function Dashboard({
   async function downloadPayslip(s: EmployeeSummary) {
     try {
       const { exportPayslip } = await import("../utils/exportPayslip")
-      exportPayslip(s, period, companyName)
+      exportPayslip(
+        s,
+        period,
+        companyName,
+        data.timeEntries,
+        data.manualAdjustments,
+      )
       onNotify(`Comprobante de ${s.employee.name.split(" ")[0]} descargado`)
     } catch (err) {
       console.error("Falló el comprobante", err)
       onNotify("No se pudo generar el comprobante.", "danger")
     }
   }
+
+  function openAdjustment(employeeId: string) {
+    if (closed) {
+      onNotify("La quincena está cerrada; no se pueden añadir ajustes.", "amber")
+      return
+    }
+    setAdjustingId(employeeId)
+    setAdjustmentKind("bono")
+    setAdjustmentAmount("")
+    setAdjustmentNote("")
+  }
+
+  function closeAdjustment() {
+    setAdjustingId(null)
+  }
+
+  function saveAdjustment() {
+    if (!adjustingId) return
+    const amount = Number.parseFloat(adjustmentAmount)
+    const note = adjustmentNote.trim()
+    if (!Number.isFinite(amount) || amount <= 0) {
+      onNotify("Escribe un monto válido para el ajuste.", "danger")
+      return
+    }
+    if (!note) {
+      onNotify("Agrega una nota para dejar claro el motivo.", "amber")
+      return
+    }
+
+    const nextAmount = Math.round(amount * 100) / 100
+    onChange((d) => ({
+      ...d,
+      manualAdjustments: [
+        ...d.manualAdjustments,
+        {
+          id: crypto.randomUUID(),
+          employeeId: adjustingId,
+          periodKey: periodKey(period),
+          kind: adjustmentKind,
+          amount: nextAmount,
+          note,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    }))
+    closeAdjustment()
+    onNotify(
+      `${adjustmentKind === "bono" ? "Bono" : "Descuento"} manual guardado`,
+      adjustmentKind === "bono" ? "ok" : "danger",
+    )
+  }
+
+  function removeAdjustment(id: string) {
+    onChange((d) => ({
+      ...d,
+      manualAdjustments: d.manualAdjustments.filter((a) => a.id !== id),
+    }))
+  }
+
+  const activeEmployee = useMemo(
+    () => summaries.find((s) => s.employee.id === adjustingId) ?? null,
+    [adjustingId, summaries],
+  )
+
+  const activeEmployeeAdjustments = useMemo(() => {
+    if (!adjustingId) return []
+    return periodAdjustments
+      .filter((a) => a.employeeId === adjustingId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }, [adjustingId, periodAdjustments])
 
   // El estado de resultados vive del mes calendario y de los movimientos, no de
   // la quincena: sigue teniendo algo que decir aunque la planilla vaya vacía.
@@ -233,17 +332,13 @@ export default function Dashboard({
       {/* KPI */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Kpi
-          label="Neto a pagar"
-          amount={totals.net}
+          label="Total a pagar"
+          amount={totals.totalPay}
           format={(n) => `$${fmt(n)}`}
           tone="ok"
-          sub={
-            netTrend.length >= 2
-              ? `Últimas ${netTrend.length} quincenas`
-              : "Lo que sale de caja"
-          }
+          sub={`Neto $${fmt(totals.net)} + extras $${fmt(totals.overtimePay)}`}
           emphasis
-          trend={netTrend}
+          trend={payTrend}
           trendColor="var(--ok)"
         />
         <Kpi
@@ -251,9 +346,22 @@ export default function Dashboard({
           amount={totals.gross}
           format={(n) => `$${fmt(n)}`}
           tone="brand"
-          sub={`Base $${fmt(totals.regularPay)}`}
+          sub={`Base $${fmt(totals.regularPay)} · sin horas extra`}
           trend={grossTrend}
           trendColor="var(--brand)"
+        />
+        <Kpi
+          label="Salario de horas extra"
+          amount={totals.overtimePay}
+          format={(n) => `$${fmt(n)}`}
+          tone="amber"
+          sub={
+            totals.overtimeHours > 0
+              ? `${fmtHours(totals.overtimeHours)} sobre la jornada`
+              : "Sin horas extra"
+          }
+          trend={hoursTrend}
+          trendColor="var(--amber)"
         />
         <Kpi
           label="Descuentos"
@@ -261,46 +369,46 @@ export default function Dashboard({
           format={(n) => `−$${fmt(n)}`}
           tone="danger"
           sub={
-            totals.loans > 0
-              ? `SS $${fmt(totals.socialSecurity)} · Ed $${fmt(totals.education)} · Prést. $${fmt(totals.loans)}`
-              : `SS $${fmt(totals.socialSecurity)} · Ed $${fmt(totals.education)}`
+            // Cada descuento por su nombre: «SS $12 · Ed $2» obligaba a saberse
+            // las siglas para leer la única cifra que el colaborador reclama.
+            <span className="block">
+              <span className="block">
+                Seguro social −${fmt(totals.socialSecurity)}
+              </span>
+              <span className="block">
+                Seguro educativo −${fmt(totals.education)}
+              </span>
+              {totals.loans > 0 && (
+                <span className="block">Préstamos −${fmt(totals.loans)}</span>
+              )}
+            </span>
           }
-        />
-        <Kpi
-          label="Horas totales"
-          amount={totals.hours}
-          format={fmtHours}
-          tone="amber"
-          sub={
-            totals.overtimeHours > 0
-              ? `${fmtHours(totals.overtimeHours)} en extras`
-              : "Sin horas extra"
-          }
-          trend={hoursTrend}
-          trendColor="var(--amber)"
         />
       </div>
 
-      {/* Composición del costo: una barra apilada se lee de un vistazo. */}
+      {/* Composición del costo: una barra apilada se lee de un vistazo. El
+          denominador es lo devengado —salario más extras— y no el bruto: si no,
+          la barra de horas extra se compararía contra un total que no las
+          contiene y los porcentajes pasarían del 100 %. */}
       <Card>
         <CardHeader
           title="Composición del costo"
-          subtitle={`Total bruto $${fmt(totals.gross)}`}
+          subtitle={`Devengado $${fmt(earned)}`}
         />
         <div className="flex h-3 rounded-full overflow-hidden bg-sunken">
           <Segment
             value={totals.regularPay}
-            total={totals.gross}
+            total={earned}
             className="bg-brand"
           />
           <Segment
             value={totals.overtimePay}
-            total={totals.gross}
+            total={earned}
             className="bg-amber"
           />
           <Segment
             value={totals.holidayPay}
-            total={totals.gross}
+            total={earned}
             className="bg-violet"
           />
         </div>
@@ -309,19 +417,19 @@ export default function Dashboard({
             dot="bg-brand"
             label="Salario base"
             value={totals.regularPay}
-            total={totals.gross}
+            total={earned}
           />
           <LegendItem
             dot="bg-amber"
             label="Horas extra"
             value={totals.overtimePay}
-            total={totals.gross}
+            total={earned}
           />
           <LegendItem
             dot="bg-violet"
             label="Recargo feriado"
             value={totals.holidayPay}
-            total={totals.gross}
+            total={earned}
           />
         </div>
       </Card>
@@ -333,7 +441,7 @@ export default function Dashboard({
           tone="violet"
           amount={profTotal}
           count={prof.length}
-          share={pct(profTotal, totals.net)}
+          share={pct(profTotal, totals.totalPay)}
           note="Sin descuentos"
         />
         <CategoryCard
@@ -341,7 +449,7 @@ export default function Dashboard({
           tone="ok"
           amount={empTotal}
           count={emp.length}
-          share={pct(empTotal, totals.net)}
+          share={pct(empTotal, totals.totalPay)}
           note="Con descuentos de ley"
         />
         <Card>
@@ -371,7 +479,7 @@ export default function Dashboard({
       <div className="grid gap-3 lg:grid-cols-5">
         <Card className="lg:col-span-3">
           <CardHeader
-            title="Neto por colaborador"
+            title="Total a pagar por colaborador"
             subtitle="Los 10 mayores del período"
           />
           <ResponsiveContainer
@@ -415,7 +523,7 @@ export default function Dashboard({
         <Card className="lg:col-span-2">
           <CardHeader
             title="Distribución por tipo"
-            subtitle="Sobre el neto a pagar"
+            subtitle="Sobre el total a pagar"
           />
           {pieData.length >= 2 ? (
             <>
@@ -455,7 +563,7 @@ export default function Dashboard({
                     <span className="font-mono font-bold text-fg">
                       ${fmt(d.value)}{" "}
                       <span className="text-subtle font-normal">
-                        {pct(d.value, totals.net).toFixed(0)}%
+                        {pct(d.value, totals.totalPay).toFixed(0)}%
                       </span>
                     </span>
                   </div>
@@ -496,10 +604,13 @@ export default function Dashboard({
                   "H. reg.",
                   "H. extra",
                   "Base",
-                  "Extras",
                   "Feriado",
-                  "Descuentos",
+                  "Seguro social",
+                  "Seguro educativo",
+                  "Otros desc.",
                   "Neto",
+                  "Horas extra",
+                  "Total a pagar",
                   "",
                 ].map((h, i) => (
                   <th
@@ -521,7 +632,11 @@ export default function Dashboard({
                   className="border-t border-line hover:bg-raised"
                 >
                   <td className="px-3 py-2.5">
-                    <div className="flex items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => openAdjustment(s.employee.id)}
+                      className="flex items-center gap-2.5 text-left w-full"
+                    >
                       <span
                         className={`w-7 h-7 rounded-full shrink-0 grid place-items-center text-white text-[10px] font-bold ${
                           s.employee.category === "profesional"
@@ -541,8 +656,24 @@ export default function Dashboard({
                               ? "Serv. profesional"
                               : "Empleado")}
                         </span>
+                        {(() => {
+                          // El monto aplicado, no el registrado: un descuento
+                          // mayor que el neto se cobra recortado, y la fila
+                          // tiene que decir lo mismo que el comprobante.
+                          const total = s.manualAdjustment || 0
+                          if (total === 0) return null
+                          return (
+                            <span
+                              className={`block text-[11px] font-semibold ${total > 0 ? "text-ok" : "text-danger"}`}
+                            >
+                              {total > 0
+                                ? `Bono manual +$${fmt(total)}`
+                                : `Descuento manual −$${fmt(Math.abs(total))}`}
+                            </span>
+                          )
+                        })()}
                       </span>
-                    </div>
+                    </button>
                   </td>
                   <Num>{s.daysWorked || "—"}</Num>
                   <Num>{fmtHours(s.regularHours)}</Num>
@@ -552,24 +683,33 @@ export default function Dashboard({
                   <Num>${fmt(s.regularPay)}</Num>
                   <Num
                     tone={
-                      s.overtimePay > 0 ? "text-amber font-semibold" : undefined
-                    }
-                  >
-                    {s.overtimePay > 0 ? `$${fmt(s.overtimePay)}` : "—"}
-                  </Num>
-                  <Num
-                    tone={
                       s.holidayPay > 0 ? "text-violet font-semibold" : undefined
                     }
                   >
                     {s.holidayPay > 0 ? `$${fmt(s.holidayPay)}` : "—"}
                   </Num>
-                  <Num tone={s.totalDeductions > 0 ? "text-danger" : undefined}>
-                    {s.totalDeductions > 0
-                      ? `−$${fmt(s.totalDeductions)}`
+                  <Num tone={s.socialSecurityDeduction > 0 ? "text-danger" : undefined}>
+                    {s.socialSecurityDeduction > 0
+                      ? `−$${fmt(s.socialSecurityDeduction)}`
                       : "—"}
                   </Num>
-                  <Num tone="text-ok font-bold">${fmt(s.netSalary)}</Num>
+                  <Num tone={s.educationDeduction > 0 ? "text-danger" : undefined}>
+                    {s.educationDeduction > 0
+                      ? `−$${fmt(s.educationDeduction)}`
+                      : "—"}
+                  </Num>
+                  <Num tone={s.loanDeduction > 0 ? "text-danger" : undefined}>
+                    {s.loanDeduction > 0 ? `−$${fmt(s.loanDeduction)}` : "—"}
+                  </Num>
+                  <Num>${fmt(s.netSalary)}</Num>
+                  <Num
+                    tone={
+                      s.overtimePay > 0 ? "text-amber font-semibold" : undefined
+                    }
+                  >
+                    {s.overtimePay > 0 ? `$${fmt(s.overtimePay)}` : "—"}
+                  </Num>
+                  <Num tone="text-ok font-bold">${fmt(s.totalPay)}</Num>
                   <td className="px-2 py-2.5 text-right">
                     <IconButton
                       icon="document"
@@ -596,17 +736,26 @@ export default function Dashboard({
                 <td className="px-3 py-3 text-right font-mono font-bold">
                   ${fmt(totals.regularPay)}
                 </td>
-                <td className="px-3 py-3 text-right font-mono font-bold text-amber">
-                  ${fmt(totals.overtimePay)}
-                </td>
                 <td className="px-3 py-3 text-right font-mono font-bold text-violet">
                   ${fmt(totals.holidayPay)}
                 </td>
                 <td className="px-3 py-3 text-right font-mono font-bold text-danger">
-                  −${fmt(totals.deductions)}
+                  −${fmt(totals.socialSecurity)}
+                </td>
+                <td className="px-3 py-3 text-right font-mono font-bold text-danger">
+                  −${fmt(totals.education)}
+                </td>
+                <td className="px-3 py-3 text-right font-mono font-bold text-danger">
+                  {totals.loans > 0 ? `−$${fmt(totals.loans)}` : "—"}
+                </td>
+                <td className="px-3 py-3 text-right font-mono font-bold">
+                  ${fmt(totals.net)}
+                </td>
+                <td className="px-3 py-3 text-right font-mono font-bold text-amber">
+                  ${fmt(totals.overtimePay)}
                 </td>
                 <td className="px-3 py-3 text-right font-mono font-bold text-ok">
-                  ${fmt(totals.net)}
+                  ${fmt(totals.totalPay)}
                 </td>
                 <td />
               </tr>
@@ -614,6 +763,115 @@ export default function Dashboard({
           </table>
         </div>
       </Card>
+
+      {adjustingId && activeEmployee && (
+        <Modal
+          title={`Ajuste manual · ${activeEmployee.employee.name}`}
+          subtitle={
+            closed
+              ? "La quincena está cerrada y no admite cambios."
+              : `Se aplicará a ${period.year}-${String(period.month).padStart(2, "0")}-${period.half}`
+          }
+          onClose={closeAdjustment}
+          width="max-w-2xl"
+          footer={
+            <>
+              <Button onClick={closeAdjustment} className="flex-1">
+                Cancelar
+              </Button>
+              <Button
+                onClick={saveAdjustment}
+                variant="primary"
+                className="flex-1"
+                disabled={closed}
+              >
+                Guardar ajuste
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            {closed && (
+              <div className="rounded-xl border border-amber/30 bg-amber-soft px-3 py-2 text-xs text-amber font-semibold">
+                Esta quincena está cerrada; puedes revisar los ajustes, pero no
+                añadir ni borrar.
+              </div>
+            )}
+            <div className="grid gap-4 sm:grid-cols-[1fr_160px]">
+              <Field label="Tipo de ajuste">
+                <Segmented
+                  value={adjustmentKind}
+                  onChange={setAdjustmentKind}
+                  options={[
+                    { value: "bono" as const, label: "Bono" },
+                    { value: "descuento" as const, label: "Descuento" },
+                  ]}
+                />
+              </Field>
+              <Field label="Monto">
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={adjustmentAmount}
+                  onChange={(e) => setAdjustmentAmount(e.target.value)}
+                  placeholder="0.00"
+                  className={inputNumClass}
+                />
+              </Field>
+            </div>
+            <Field label="Nota" hint="Deja claro por qué se hizo el ajuste.">
+              <textarea
+                value={adjustmentNote}
+                onChange={(e) => setAdjustmentNote(e.target.value)}
+                placeholder="Ej. Bono por meta cumplida / Descuento por salida anticipada no justificada"
+                rows={3}
+                className={`${inputClass} min-h-[96px] resize-y`}
+              />
+            </Field>
+
+            <div className="pt-2 border-t border-line">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <h4 className="text-sm font-bold text-fg">Ajustes de esta quincena</h4>
+                <span className="text-xs text-muted">
+                  {activeEmployeeAdjustments.length} registro(s)
+                </span>
+              </div>
+              {activeEmployeeAdjustments.length > 0 ? (
+                <div className="space-y-2">
+                  {activeEmployeeAdjustments.map((adj) => (
+                    <div
+                      key={adj.id}
+                      className="flex items-start gap-3 rounded-xl border border-line bg-raised px-3 py-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge tone={adj.kind === "bono" ? "ok" : "danger"}>
+                            {adj.kind === "bono" ? "Bono" : "Descuento"}
+                          </Badge>
+                          <span className="font-mono text-sm font-semibold text-fg">
+                            {adj.kind === "bono" ? "+" : "-"}${fmt(adj.amount)}
+                          </span>
+                        </div>
+                        <p className="text-sm text-muted mt-1">{adj.note}</p>
+                      </div>
+                      <IconButton
+                        icon="trash"
+                        label="Eliminar ajuste"
+                        tone="danger"
+                        onClick={() => removeAdjustment(adj.id)}
+                        disabled={closed}
+                      />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted">Todavía no hay ajustes para este colaborador.</p>
+              )}
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }
@@ -652,7 +910,8 @@ function Kpi({
   amount: number
   /** Cómo se pinta la cifra; se aplica también a los valores intermedios. */
   format: (n: number) => string
-  sub: string
+  /** Pie de la tarjeta: admite varias líneas cuando hay que desglosar. */
+  sub: ReactNode
   tone: Tone
   emphasis?: boolean
   /** Serie histórica opcional para la minigráfica del pie de la tarjeta. */
@@ -675,7 +934,7 @@ function Kpi({
           emphasis ? "text-3xl" : "text-2xl"
         } ${KPI_TONE[tone]}`}
       />
-      <p className="text-[11px] text-subtle mt-1 truncate">{sub}</p>
+      <div className="text-[11px] text-subtle mt-1">{sub}</div>
       {trend && trend.length >= 2 && (
         <div className="-mx-4 -mb-4 mt-2 opacity-70">
           <Sparkline values={trend} color={trendColor} height={26} />
@@ -760,7 +1019,7 @@ function CategoryCard({
         />
       </div>
       <div className="text-[11px] text-subtle mt-1.5">
-        {share.toFixed(1)}% del neto total
+        {share.toFixed(1)}% del total a pagar
       </div>
     </Card>
   )

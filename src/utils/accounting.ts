@@ -215,15 +215,16 @@ function periodNetCost(
 ): number {
   const key = periodKey(period)
   const closed = data.closedPeriods.find((c) => c.key === key)
-  if (closed) return calcTotals(closed.summaries).net
+  if (closed) return calcTotals(closed.summaries).totalPay
   const summaries = calcPeriodSummaries(
     data.employees,
     data.timeEntries,
     period,
     rules,
     data.loans,
+    data.manualAdjustments,
   )
-  return calcTotals(summaries).net
+  return calcTotals(summaries).totalPay
 }
 
 /** Costo de nómina (neto pagado) de un mes calendario: sus dos quincenas. */
