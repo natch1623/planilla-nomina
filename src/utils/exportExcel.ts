@@ -2,6 +2,7 @@ import * as XLSX from "xlsx"
 import type { EmployeeSummary, PayPeriod, TimeEntry } from "../types"
 import { MONTHS_ES, getPeriodDates } from "../store"
 import { DAY_TYPE_META, DAY_TYPES, calcTotals } from "./calculations"
+import type { PayrollRules } from "./calculations"
 import { attendanceFor } from "./attendance"
 
 const round = (n: number) => Math.round(n * 100) / 100
@@ -135,6 +136,8 @@ export function buildPayrollWorkbook(
   period: PayPeriod,
   /** Registros del período; sin ellos se omite la hoja de asistencia. */
   entries?: TimeEntry[],
+  /** Umbral de horas extra; sin él se asume el estándar de 8h diarias. */
+  rules: Pick<PayrollRules, "overtimeThreshold"> = { overtimeThreshold: 8 },
 ): XLSX.WorkBook {
   const periodLabel = `${MONTHS_ES[period.month - 1]} ${period.year} - Q${period.half}`
   const totals = calcTotals(summaries)
@@ -284,7 +287,8 @@ export function buildPayrollWorkbook(
   if (entries && summaries.length > 0) {
     const { start, end } = getPeriodDates(period)
     const attendance = summaries.flatMap((s) =>
-      attendanceFor(entries, s.employee.id, start, end).records.map((r) => ({
+      attendanceFor(entries, s.employee.id, start, end, s.employee, rules).records.map(
+        (r) => ({
           Colaborador: s.employee.name,
           Fecha: r.date,
           Día: r.dayLabel,
@@ -292,10 +296,12 @@ export function buildPayrollWorkbook(
           Entrada: r.entryTime,
           Salida: r.exitTime,
           "Almuerzo (min)": r.lunchMinutes,
-          "Horas netas": round(r.hours),
+          "Horas regulares": round(r.regularHours),
+          "Horas extra": round(r.overtimeHours),
           "Recargo extra": r.overtimeRate !== 1 ? `x${r.overtimeRate}` : "",
           Nota: r.note,
-        })),
+        }),
+      ),
     )
     if (attendance.length > 0) {
       const wsAttendance = XLSX.utils.json_to_sheet(attendance)
@@ -307,22 +313,25 @@ export function buildPayrollWorkbook(
         { wch: 10 },
         { wch: 10 },
         { wch: 14 },
-        { wch: 12 },
         { wch: 14 },
+        { wch: 12 },
+        { wch: 12 },
         { wch: 34 },
       ]
       wsAttendance["!freeze"] = { xSplit: 1, ySplit: 1 }
       wsAttendance["!autofilter"] = {
         ref: XLSX.utils.encode_range(
           { r: 0, c: 0 },
-          { r: attendance.length, c: 9 },
+          { r: attendance.length, c: 10 },
         ),
       }
       // Las horas se guardan como número con formato, igual que en la planilla:
       // así la hoja sirve para sumar y no solo para mirar.
       for (let r = 1; r <= attendance.length; r++) {
-        const cell = wsAttendance[XLSX.utils.encode_cell({ r, c: 7 })]
-        if (cell && cell.t === "n") cell.z = HOURS
+        for (const c of [7, 8]) {
+          const cell = wsAttendance[XLSX.utils.encode_cell({ r, c })]
+          if (cell && cell.t === "n") cell.z = HOURS
+        }
       }
       XLSX.utils.book_append_sheet(wb, wsAttendance, "Asistencia")
     }
@@ -345,9 +354,11 @@ export function exportToExcel(
   summaries: EmployeeSummary[],
   period: PayPeriod,
   entries?: TimeEntry[],
+  /** Umbral de horas extra; sin él se asume el estándar de 8h diarias. */
+  rules: Pick<PayrollRules, "overtimeThreshold"> = { overtimeThreshold: 8 },
 ): void {
   XLSX.writeFile(
-    buildPayrollWorkbook(summaries, period, entries),
+    buildPayrollWorkbook(summaries, period, entries, rules),
     `planilla_${period.year}_${String(period.month).padStart(2, "0")}_q${period.half}.xlsx`,
   )
 }

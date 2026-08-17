@@ -14,6 +14,7 @@ import {
   fmt,
   fmtHours,
 } from "./calculations"
+import type { PayrollRules } from "./calculations"
 import { attendanceRows } from "./attendance"
 import { formatDate } from "./dates"
 
@@ -91,7 +92,7 @@ function drawAttendance(
    * letra: apretar el interlineado se nota menos que perder cuerpo.
    */
   const budget = available - 2.5
-  const detailWidth = inner * 0.49
+  const detailWidth = inner * 0.44
   let fontSize = 7
   let padding = 1.4
 
@@ -103,7 +104,7 @@ function drawAttendance(
       const lines = rows.reduce(
         (sum, r) =>
           sum +
-          Math.max(1, doc.splitTextToSize(r[5], detailWidth - pad * 2).length),
+          Math.max(1, doc.splitTextToSize(r[6], detailWidth - pad * 2).length),
         1, // el encabezado
       )
       const height = lines * lineH + (rows.length + 1) * pad * 2
@@ -123,7 +124,9 @@ function drawAttendance(
 
   autoTable(doc, {
     startY: y,
-    head: [["Día", "Tipo", "Entrada", "Salida", "Horas", "Detalle"]],
+    head: [
+      ["Día", "Tipo", "Entrada", "Salida", "Reg.", "Extra", "Detalle"],
+    ],
     body: rows,
     theme: "grid",
     headStyles: {
@@ -143,10 +146,11 @@ function drawAttendance(
     columnStyles: {
       0: { cellWidth: inner * 0.1 },
       1: { cellWidth: inner * 0.12 },
-      2: { cellWidth: inner * 0.1, halign: "center" },
-      3: { cellWidth: inner * 0.1, halign: "center" },
-      4: { cellWidth: inner * 0.09, halign: "right" },
-      5: { cellWidth: "auto", textColor: MUTED },
+      2: { cellWidth: inner * 0.09, halign: "center" },
+      3: { cellWidth: inner * 0.09, halign: "center" },
+      4: { cellWidth: inner * 0.08, halign: "right" },
+      5: { cellWidth: inner * 0.08, halign: "right", textColor: AMBER },
+      6: { cellWidth: "auto", textColor: MUTED },
     },
     // Un día sin marcación se atenúa entero: se distingue de un día trabajado
     // sin tener que leer la columna de tipo.
@@ -178,6 +182,7 @@ function drawPayslip(
   s: EmployeeSummary,
   period: PayPeriod,
   companyName: string,
+  rules: Pick<PayrollRules, "overtimeThreshold">,
   entries?: TimeEntry[],
   adjustments: PayrollAdjustment[] = [],
 ): void {
@@ -488,7 +493,14 @@ function drawPayslip(
 
   // Asistencia día por día, en el hueco que queda entre el neto y las firmas.
   if (entries) {
-    const { rows, totalHours } = attendanceRows(entries, emp.id, start, end)
+    const { rows, totalHours } = attendanceRows(
+      entries,
+      emp.id,
+      start,
+      end,
+      emp,
+      rules,
+    )
     if (rows.length > 0) {
       drawAttendance(doc, rows, totalHours, y + 6, signY - 8 - (y + 6), M, W)
     }
@@ -529,13 +541,15 @@ export function buildPayslipDoc(
   companyName = "",
   entries?: TimeEntry[],
   adjustments: PayrollAdjustment[] = [],
+  /** Umbral de horas extra; sin él se asume el estándar de 8h diarias. */
+  rules: Pick<PayrollRules, "overtimeThreshold"> = { overtimeThreshold: 8 },
 ): jsPDF {
   const doc = new jsPDF({
     orientation: "portrait",
     format: "letter",
     unit: "mm",
   })
-  drawPayslip(doc, s, period, companyName, entries, adjustments)
+  drawPayslip(doc, s, period, companyName, rules, entries, adjustments)
   return doc
 }
 
@@ -547,8 +561,17 @@ export function exportPayslip(
   entries?: TimeEntry[],
   /** Ajustes manuales del período; sin ellos se omite el detalle de bonos/descuentos. */
   adjustments: PayrollAdjustment[] = [],
+  /** Umbral de horas extra; sin él se asume el estándar de 8h diarias. */
+  rules: Pick<PayrollRules, "overtimeThreshold"> = { overtimeThreshold: 8 },
 ): void {
-  const doc = buildPayslipDoc(s, period, companyName, entries, adjustments)
+  const doc = buildPayslipDoc(
+    s,
+    period,
+    companyName,
+    entries,
+    adjustments,
+    rules,
+  )
   doc.save(
     `comprobante_${fileSlug(s.employee.name)}_${period.year}_${String(period.month).padStart(2, "0")}_q${period.half}.pdf`,
   )
@@ -562,6 +585,8 @@ export function exportAllPayslips(
   entries?: TimeEntry[],
   /** Ajustes manuales del período; sin ellos se omite el detalle de bonos/descuentos. */
   adjustments: PayrollAdjustment[] = [],
+  /** Umbral de horas extra; sin él se asume el estándar de 8h diarias. */
+  rules: Pick<PayrollRules, "overtimeThreshold"> = { overtimeThreshold: 8 },
 ): void {
   const doc = new jsPDF({
     orientation: "portrait",
@@ -570,7 +595,7 @@ export function exportAllPayslips(
   })
   summaries.forEach((s, i) => {
     if (i > 0) doc.addPage()
-    drawPayslip(doc, s, period, companyName, entries, adjustments)
+    drawPayslip(doc, s, period, companyName, rules, entries, adjustments)
   })
   doc.save(
     `comprobantes_${period.year}_${String(period.month).padStart(2, "0")}_q${period.half}.pdf`,

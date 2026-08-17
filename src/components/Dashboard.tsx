@@ -196,6 +196,7 @@ export default function Dashboard({
         companyName,
         data.timeEntries,
         data.manualAdjustments,
+        rules,
       )
       onNotify(`Comprobante de ${s.employee.name.split(" ")[0]} descargado`)
     } catch (err) {

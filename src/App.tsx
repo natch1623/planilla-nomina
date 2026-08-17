@@ -307,7 +307,7 @@ export default function App() {
 
       if (kind === "excel") {
         const { exportToExcel } = await import("./utils/exportExcel")
-        exportToExcel(summaries, data.currentPeriod, data.timeEntries)
+        exportToExcel(summaries, data.currentPeriod, data.timeEntries, rules)
         push("Excel descargado")
       } else if (kind === "pdf") {
         const { exportToPDF } = await import("./utils/exportPDF")
@@ -321,6 +321,7 @@ export default function App() {
           data.companyName,
           data.timeEntries,
           data.manualAdjustments,
+          rules,
         )
         push(`${summaries.length} comprobantes descargados`)
       }

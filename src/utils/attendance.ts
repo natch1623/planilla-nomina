@@ -1,5 +1,12 @@
-import type { TimeEntry } from "../types"
-import { DAY_TYPE_META, calcWorkedHours, fmtHours, usesSchedule } from "./calculations"
+import type { Employee, TimeEntry } from "../types"
+import {
+  DAY_TYPE_META,
+  calcWorkedHours,
+  fmtHours,
+  splitHours,
+  usesSchedule,
+} from "./calculations"
+import type { PayrollRules } from "./calculations"
 import { dayName, dayNum, datesBetween } from "./dates"
 
 /** Un renglón de asistencia: un turno registrado, o un día sin marcación. */
@@ -11,6 +18,14 @@ export interface AttendanceRecord {
   exitTime: string
   hours: number // horas netas del turno
   hoursLabel: string
+  /** Horas del turno pagadas a tarifa normal. Igual a `hours` salvo en un
+   *  colaborador por hora que cruzó el umbral de horas extra. */
+  regularHours: number
+  regularHoursLabel: string
+  /** Horas del turno pagadas con recargo; solo aplica a colaboradores por
+   *  hora, ya que a diario y salario fijo no les cambia el pago. */
+  overtimeHours: number
+  overtimeHoursLabel: string
   lunchMinutes: number
   overtimeRate: number
   note: string
@@ -37,6 +52,8 @@ export function attendanceFor(
   employeeId: string,
   start: string,
   end: string,
+  employee: Pick<Employee, "paymentType">,
+  rules: Pick<PayrollRules, "overtimeThreshold">,
 ): { records: AttendanceRecord[]; totalHours: number } {
   const byDate = new Map<string, TimeEntry[]>()
   for (const e of entries) {
@@ -63,6 +80,10 @@ export function attendanceFor(
         exitTime: "—",
         hours: 0,
         hoursLabel: "—",
+        regularHours: 0,
+        regularHoursLabel: "—",
+        overtimeHours: 0,
+        overtimeHoursLabel: "—",
         lunchMinutes: 0,
         overtimeRate: 1,
         note: "",
@@ -77,6 +98,14 @@ export function attendanceFor(
       const timed = usesSchedule(entry.dayType)
       const lunchMinutes = timed && entry.lunchBreak ? entry.lunchDuration : 0
       totalHours += worked.total
+
+      // Solo a un colaborador por hora le cambia el pago al cruzar el umbral;
+      // a diario y salario fijo el turno completo cuenta como regular porque
+      // ya cobran lo mismo pase lo que pase.
+      const { regular, overtime } =
+        employee.paymentType === "hourly"
+          ? splitHours(worked.total, rules.overtimeThreshold)
+          : { regular: worked.total, overtime: 0 }
 
       const details: string[] = []
       if (timed && worked.invalid) details.push("Registro inválido")
@@ -104,6 +133,10 @@ export function attendanceFor(
         exitTime: timed ? entry.exitTime || "—" : "—",
         hours: worked.total,
         hoursLabel: worked.total > 0 ? fmtHours(worked.total) : "—",
+        regularHours: regular,
+        regularHoursLabel: regular > 0 ? fmtHours(regular) : "—",
+        overtimeHours: overtime,
+        overtimeHoursLabel: overtime > 0 ? fmtHours(overtime) : "—",
         lunchMinutes,
         overtimeRate: entry.overtimeRate,
         note: entry.notes.trim(),
@@ -127,14 +160,24 @@ export function attendanceRows(
   employeeId: string,
   start: string,
   end: string,
+  employee: Pick<Employee, "paymentType">,
+  rules: Pick<PayrollRules, "overtimeThreshold">,
 ): { rows: string[][]; totalHours: number } {
-  const { records, totalHours } = attendanceFor(entries, employeeId, start, end)
+  const { records, totalHours } = attendanceFor(
+    entries,
+    employeeId,
+    start,
+    end,
+    employee,
+    rules,
+  )
   const rows = records.map((r, i) => [
     i > 0 && records[i - 1].date === r.date ? "" : r.dayLabel,
     r.typeLabel,
     r.entryTime,
     r.exitTime,
-    r.hoursLabel,
+    r.regularHoursLabel,
+    r.overtimeHoursLabel,
     r.detail,
   ])
   return { rows, totalHours }
