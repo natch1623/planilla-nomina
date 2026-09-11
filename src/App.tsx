@@ -11,6 +11,7 @@ import type { AppData, EmployeeSummary, PayPeriod } from "./types"
 import type { ProfileIndex } from "./store"
 import {
   createProfile,
+  createProfileWithData,
   deleteProfile,
   getPeriodDates,
   loadIndex,
@@ -24,6 +25,9 @@ import {
   syncProfileName,
 } from "./store"
 import { calcPeriodSummaries, rulesFrom } from "./utils/calculations"
+import { useCloud } from "./cloud/useCloud"
+import { CloudBanner, CloudButton, ConflictDialog } from "./components/Nube"
+import NubePanel from "./components/NubePanel"
 import Dashboard from "./components/Dashboard"
 import Icon from "./components/Icon"
 import type { IconName } from "./components/Icon"
@@ -260,6 +264,56 @@ export default function App() {
     [activeId, data, index, push],
   )
 
+  /** Abre como perfil nuevo una empresa bajada de la nube. */
+  const openAsNewProfile = useCallback(
+    (incoming: AppData) => {
+      saveProfileData(activeId, data)
+      const created = createProfileWithData(index, incoming)
+      setIndex(created.index)
+      setData(created.data)
+      setTab("dashboard")
+      firstRender.current = true
+      setProfileMenu(false)
+      return created.id
+    },
+    [activeId, data, index],
+  )
+
+  /**
+   * Borra las copias locales de empresas de la nube (al cerrar sesión en un
+   * equipo compartido). Si eran todas, deja un perfil vacío: la app necesita
+   * al menos uno.
+   */
+  const forgetProfiles = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return
+      const gone = new Set(ids)
+      if (!gone.has(activeId)) saveProfileData(activeId, data)
+      let next = index
+      if (next.profiles.every((p) => gone.has(p.id))) {
+        next = createProfile(next, "").index
+      }
+      for (const id of ids) next = deleteProfile(next, id) ?? next
+      if (gone.has(next.activeId)) next = { ...next, activeId: next.profiles[0].id }
+      saveIndex(next)
+      setIndex(next)
+      setData(loadProfileData(next.activeId))
+      setTab("dashboard")
+      firstRender.current = true
+    },
+    [activeId, data, index],
+  )
+
+  const cloud = useCloud({
+    activeId,
+    data,
+    setData,
+    notify: push,
+    openAsNewProfile,
+    switchProfile,
+    forgetProfiles,
+  })
+
   const removeProfile = useCallback(
     (id: string) => {
       const next = deleteProfile(index, id)
@@ -267,6 +321,8 @@ export default function App() {
         push("No se puede eliminar el único perfil", "amber")
         return
       }
+      // Se borra la copia de este equipo; la empresa sigue en la nube.
+      cloud.forgetLink(id)
       setIndex(next)
       if (id === activeId) {
         setData(loadProfileData(next.activeId))
@@ -275,7 +331,7 @@ export default function App() {
       firstRender.current = true
       push("Perfil eliminado", "danger")
     },
-    [activeId, index, push],
+    [activeId, index, push, cloud.forgetLink],
   )
 
   const { start, end } = getPeriodDates(data.currentPeriod)
@@ -407,11 +463,54 @@ export default function App() {
                             p.id === activeId ? "" : "opacity-0"
                           }`}
                         />
-                        <span className="text-sm font-semibold text-fg truncate">
+                        <span className="text-sm font-semibold text-fg truncate flex-1">
                           {profileLabel(p)}
                         </span>
+                        {cloud.links[p.id] && (
+                          <Icon
+                            name="cloud"
+                            className="w-3.5 h-3.5 shrink-0 text-subtle"
+                          />
+                        )}
                       </button>
                     ))}
+                    {cloud.remoteOnly.length > 0 && (
+                      <>
+                        <div className="px-4 py-1.5 bg-raised">
+                          <span className="text-[10px] font-bold text-subtle uppercase tracking-widest">
+                            En la nube
+                          </span>
+                        </div>
+                        {cloud.remoteOnly.map((c) => (
+                          <button
+                            key={c.id}
+                            role="menuitem"
+                            onClick={() => {
+                              setProfileMenu(false)
+                              cloud
+                                .openCompany(c.id)
+                                .catch((err) =>
+                                  push(
+                                    err instanceof Error
+                                      ? err.message
+                                      : "No se pudo abrir la empresa",
+                                    "danger",
+                                  ),
+                                )
+                            }}
+                            className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-raised border-b border-line"
+                          >
+                            <Icon
+                              name="download"
+                              className="w-3.5 h-3.5 shrink-0 text-brand"
+                            />
+                            <span className="text-sm font-semibold text-fg truncate">
+                              {c.name || "Sin nombre"}
+                            </span>
+                          </button>
+                        ))}
+                      </>
+                    )}
                     <button
                       role="menuitem"
                       onClick={() => {
@@ -447,6 +546,8 @@ export default function App() {
                 <Icon name="check" className="w-3.5 h-3.5" />
                 Guardado
               </span>
+
+              {cloud.available && <CloudButton cloud={cloud} onNotify={push} />}
 
               <ThemeToggle
                 value={data.theme}
@@ -544,6 +645,8 @@ export default function App() {
         </div>
       </header>
 
+      <CloudBanner cloud={cloud} />
+
       {closed && (
         <div className="bg-amber-soft border-b border-line">
           <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-2 text-xs font-semibold text-amber">
@@ -615,6 +718,11 @@ export default function App() {
               onDeleteProfile={removeProfile}
               onChange={setData}
               onNotify={push}
+              cloudPanel={
+                cloud.available ? (
+                  <NubePanel cloud={cloud} onNotify={push} />
+                ) : undefined
+              }
             />
           )}
         </Suspense>
@@ -622,8 +730,10 @@ export default function App() {
 
       <footer className="max-w-7xl mx-auto px-4 pb-8 text-[11px] text-subtle">
         Período {start} — {end} · {MONTHS_ES[data.currentPeriod.month - 1]}{" "}
-        {data.currentPeriod.year} · Los datos se guardan en este navegador.
-        Exporta un respaldo JSON con regularidad.
+        {data.currentPeriod.year} ·{" "}
+        {cloud.link
+          ? "Los datos se guardan en este navegador y en la nube."
+          : "Los datos se guardan en este navegador. Exporta un respaldo JSON con regularidad."}
       </footer>
 
       {creatingProfile && (
@@ -677,6 +787,8 @@ export default function App() {
           </div>
         </Modal>
       )}
+
+      <ConflictDialog cloud={cloud} localData={data} />
 
       <ToastStack toasts={toasts} />
     </div>

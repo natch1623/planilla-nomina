@@ -24,7 +24,7 @@ import type {
 } from "./types"
 
 const STORAGE_KEY = "planilla_data"
-const DATA_VERSION = 10
+export const DATA_VERSION = 10
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const TIME_RE = /^\d{2}:\d{2}$/
@@ -681,6 +681,24 @@ export function createProfile(
   const next: ProfileIndex = {
     activeId: id,
     profiles: [...index.profiles, { id, name: name.trim() }],
+  }
+  saveIndex(next)
+  return { index: next, data, id }
+}
+
+/**
+ * Crea un perfil con datos ya existentes —una empresa bajada de la nube— y lo
+ * deja activo.
+ */
+export function createProfileWithData(
+  index: ProfileIndex,
+  data: AppData,
+): CreatedProfile {
+  const id = newProfileId()
+  saveProfileData(id, data)
+  const next: ProfileIndex = {
+    activeId: id,
+    profiles: [...index.profiles, { id, name: data.companyName }],
   }
   saveIndex(next)
   return { index: next, data, id }

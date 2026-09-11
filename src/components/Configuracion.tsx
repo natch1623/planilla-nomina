@@ -40,6 +40,8 @@ interface Props {
   onDeleteProfile: (id: string) => void
   onChange: (data: AppData) => void
   onNotify: (text: string, tone?: Tone) => void
+  /** Tarjeta de la nube; ausente cuando el build no trae credenciales. */
+  cloudPanel?: React.ReactNode
 }
 
 type Pending = "clear" | "close" | "reopen" | "import" | null
@@ -53,6 +55,7 @@ export default function Configuracion({
   onDeleteProfile,
   onChange,
   onNotify,
+  cloudPanel,
 }: Props) {
   const [pending, setPending] = useState<Pending>(null)
   const [importedData, setImportedData] = useState<AppData | null>(null)
@@ -217,6 +220,8 @@ export default function Configuracion({
           </Field>
         </div>
       </Card>
+
+      {cloudPanel}
 
       {/* Reglas de cálculo */}
       <Card>

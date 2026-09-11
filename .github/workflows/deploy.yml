@@ -53,6 +53,8 @@ jobs:
         env:
           # GitHub Pages sirve en https://usuario.github.io/<repo>/
           BASE_PATH: /${{ github.event.repository.name }}/
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: pnpm build
 
       - uses: actions/upload-pages-artifact@v3
