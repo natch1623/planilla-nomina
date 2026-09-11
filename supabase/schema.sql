@@ -32,13 +32,22 @@ create table if not exists public.companies (
 create table if not exists public.company_members (
   company_id  uuid not null references public.companies(id) on delete cascade,
   user_id     uuid not null references auth.users(id) on delete cascade,
-  -- owner: todo, incluido invitar y borrar la empresa
-  -- editor: ver y modificar datos
-  -- viewer: solo ver
-  role        text not null default 'editor' check (role in ('owner', 'editor', 'viewer')),
+  -- owner:  Administrador. Todo, incluido manejar personas y borrar la empresa.
+  -- editor: ve y modifica todos los datos.
+  -- viewer: ve todos los datos, no modifica nada.
+  -- costos: SOLO la lista de costos (ver, agregar, editar). Nunca recibe
+  --         salarios, registro diario ni el resto de la empresa: no puede
+  --         leer la tabla companies y trabaja con get/save_company_costs().
+  role        text not null default 'editor',
   created_at  timestamptz not null default now(),
   primary key (company_id, user_id)
 );
+
+-- Fuera del create para que al volver a correr el script se actualice la
+-- lista de roles aunque la tabla ya exista.
+alter table public.company_members drop constraint if exists company_members_role_check;
+alter table public.company_members add constraint company_members_role_check
+  check (role in ('owner', 'editor', 'viewer', 'costos'));
 
 create index if not exists company_members_user_idx on public.company_members(user_id);
 
@@ -102,10 +111,12 @@ alter table public.company_members enable row level security;
 revoke all on public.companies       from anon;
 revoke all on public.company_members from anon;
 
+-- El rol costos queda fuera a propósito: leer la fila es leer toda la
+-- empresa, salarios incluidos.
 drop policy if exists companies_select on public.companies;
 create policy companies_select on public.companies
   for select to authenticated
-  using (public.company_role(id) is not null);
+  using (public.company_role(id) in ('owner', 'editor', 'viewer'));
 
 -- Sin política de insert: las empresas se crean solo con create_company().
 
@@ -137,14 +148,14 @@ declare
   v_user uuid;
 begin
   if public.company_role(p_company) is distinct from 'owner' then
-    raise exception 'Solo el dueño de la empresa puede invitar miembros';
+    raise exception 'Solo un administrador de la empresa puede agregar personas';
   end if;
-  if p_role not in ('owner', 'editor', 'viewer') then
+  if p_role not in ('owner', 'editor', 'viewer', 'costos') then
     raise exception 'Rol inválido: %', p_role;
   end if;
   select id into v_user from auth.users where lower(email) = lower(trim(p_email));
   if v_user is null then
-    raise exception 'No existe un usuario con el correo %', p_email;
+    raise exception 'No existe el usuario %', split_part(p_email, '@', 1);
   end if;
   insert into public.company_members (company_id, user_id, role)
   values (p_company, v_user, p_role)
@@ -155,7 +166,7 @@ create or replace function public.remove_company_member(p_company uuid, p_user u
 returns void language plpgsql security definer set search_path = public as $$
 begin
   if public.company_role(p_company) is distinct from 'owner' then
-    raise exception 'Solo el dueño de la empresa puede quitar miembros';
+    raise exception 'Solo un administrador de la empresa puede quitar personas';
   end if;
   if p_user = auth.uid() then
     raise exception 'No puedes quitarte a ti mismo';
@@ -174,6 +185,71 @@ language sql stable security definer set search_path = public as $$
     and public.company_role(p_company) is not null
   order by u.email
 $$;
+
+-- ---------------------------------------------------------------------
+-- Lectura liviana para todos los roles (costos incluido): lista de
+-- empresas y revisión, sin el JSON de datos.
+-- ---------------------------------------------------------------------
+create or replace function public.my_companies()
+returns table (id uuid, name text, revision bigint, updated_at timestamptz, updated_by_email text, role text)
+language sql stable security definer set search_path = public as $$
+  select c.id, c.name, c.revision, c.updated_at, c.updated_by_email, m.role
+  from public.company_members m
+  join public.companies c on c.id = m.company_id
+  where m.user_id = auth.uid()
+  order by c.name
+$$;
+
+create or replace function public.company_revision(p_company uuid)
+returns bigint language sql stable security definer set search_path = public as $$
+  select c.revision from public.companies c
+  where c.id = p_company and public.company_role(p_company) is not null
+$$;
+
+-- ---------------------------------------------------------------------
+-- Costos: la única puerta del rol costos a los datos. Solo entra y sale
+-- la lista `costs` del JSON; el resto de la empresa nunca viaja.
+-- ---------------------------------------------------------------------
+create or replace function public.get_company_costs(p_company uuid)
+returns table (costs jsonb, revision bigint, updated_at timestamptz, updated_by_email text)
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if public.company_role(p_company) is null then
+    raise exception 'No tienes acceso a esta empresa';
+  end if;
+  return query
+    select coalesce(c.data -> 'costs', '[]'::jsonb), c.revision, c.updated_at, c.updated_by_email
+    from public.companies c where c.id = p_company;
+end $$;
+
+-- Devuelve la revisión nueva, o null si otra persona guardó antes
+-- (misma regla de "solo si la revisión sigue siendo la que conozco").
+create or replace function public.save_company_costs(p_company uuid, p_costs jsonb, p_expected_revision bigint)
+returns bigint language plpgsql security definer set search_path = public as $$
+declare
+  v_rev bigint;
+begin
+  if coalesce(public.company_role(p_company), '') not in ('owner', 'editor', 'costos') then
+    raise exception 'No tienes permiso para modificar costos en esta empresa';
+  end if;
+  if jsonb_typeof(p_costs) is distinct from 'array' then
+    raise exception 'Formato de costos inválido';
+  end if;
+  update public.companies
+     set data = jsonb_set(data, '{costs}', p_costs, true)
+   where id = p_company and revision = p_expected_revision
+  returning revision into v_rev;
+  return v_rev;
+end $$;
+
+revoke all on function public.my_companies()                         from public, anon;
+revoke all on function public.company_revision(uuid)                 from public, anon;
+revoke all on function public.get_company_costs(uuid)                from public, anon;
+revoke all on function public.save_company_costs(uuid, jsonb, bigint) from public, anon;
+grant execute on function public.my_companies()                         to authenticated;
+grant execute on function public.company_revision(uuid)                 to authenticated;
+grant execute on function public.get_company_costs(uuid)                to authenticated;
+grant execute on function public.save_company_costs(uuid, jsonb, bigint) to authenticated;
 
 revoke all on function public.create_company(text, jsonb)            from public, anon;
 grant execute on function public.create_company(text, jsonb)          to authenticated;

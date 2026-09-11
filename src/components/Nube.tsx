@@ -1,5 +1,6 @@
 import { useState } from "react"
 import type { Cloud, CloudStatus } from "../cloud/useCloud"
+import { displayUser } from "../cloud/client"
 import { exportJSON } from "../store"
 import type { AppData } from "../types"
 import Icon from "./Icon"
@@ -98,7 +99,7 @@ export function CloudButton({
           >
             <div className="px-4 py-3 border-b border-line">
               <div className="text-[11px] text-subtle">Sesión iniciada como</div>
-              <div className="text-sm font-semibold text-fg truncate">{cloud.email}</div>
+              <div className="text-sm font-semibold text-fg truncate">{displayUser(cloud.email)}</div>
               <div className="mt-2 flex items-start gap-2 text-xs text-muted">
                 <span className={`mt-1 w-2 h-2 rounded-full shrink-0 ${info.dot}`} />
                 <span>
@@ -245,10 +246,13 @@ function LoginModal({
           }
         }}
       >
-        <Field label="Correo">
+        <Field label="Usuario">
           <input
-            type="email"
+            type="text"
             autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
+            placeholder="p. ej. douglas"
             autoFocus
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -371,7 +375,7 @@ export function ConflictDialog({
     >
       <div className="space-y-3 text-sm text-muted leading-relaxed">
         <p>
-          <strong className="text-fg">{snap.updatedByEmail || "Alguien"}</strong> guardó esta empresa
+          <strong className="text-fg">{displayUser(snap.updatedByEmail) || "Alguien"}</strong> guardó esta empresa
           el {when}, mientras tú tenías cambios sin subir. Hay que elegir una versión:
         </p>
         <ul className="space-y-1.5 text-xs">

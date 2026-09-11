@@ -179,7 +179,9 @@ export function useCloud({
           applySnapshot(snap, profileId)
           if (!outdated.current) {
             notify(
-              snap.updatedByEmail ? `Datos actualizados con los cambios de ${snap.updatedByEmail}` : "Datos actualizados desde la nube",
+              snap.updatedByEmail
+                ? `Datos actualizados con los cambios de ${api.displayUser(snap.updatedByEmail)}`
+                : "Datos actualizados desde la nube",
             )
             void refreshCompanies()
           }
@@ -329,6 +331,12 @@ export function useCloud({
         switchProfile(existing)
         return
       }
+      const target = companies.find((c) => c.id === companyIdToOpen)
+      if (target?.role === "costos") {
+        // La vista reducida llega con el módulo de Costos; mientras tanto ese
+        // rol no tiene nada que abrir (y no puede leer la empresa completa).
+        throw new api.CloudError("Tu acceso es solo a Costos, que todavía no está disponible en esta versión.")
+      }
       const snap = await api.fetchCompany(companyIdToOpen)
       if (isFromNewerApp(snap.data, DATA_VERSION)) {
         throw new api.CloudError("Esta empresa se guardó con una versión más nueva de la app. Recarga la página.")
@@ -336,7 +344,7 @@ export function useCloud({
       const profileId = openAsNewProfile(normalizeData(snap.data))
       setLinks((prev) => ({ ...prev, [profileId]: { companyId: companyIdToOpen, revision: snap.revision, dirty: false } }))
     },
-    [openAsNewProfile, setLinks, switchProfile],
+    [companies, openAsNewProfile, setLinks, switchProfile],
   )
 
   /** Deja de sincronizar la empresa activa; la copia local se conserva. */

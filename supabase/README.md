@@ -25,9 +25,15 @@ Las cuentas las creas tú; nadie debe poder registrarse solo.
 
 1. **Authentication → Sign In / Providers**. En **Email**, deja activo
    *Enable Email provider* y **desactiva** *Allow new users to sign up*.
-2. **Authentication → Users → Add user → Create new user**, una por persona
-   (correo + contraseña temporal). Marca *Auto Confirm User*.
-   Cada quien puede cambiar su contraseña luego en Configuración → Nube.
+2. **Authentication → Users → Add user → Create new user**, una por persona.
+   - **Email**: `usuario@planilla.local` — por ejemplo `douglas@planilla.local`,
+     en minúsculas, sin tildes ni espacios. En la app la persona escribe solo
+     `douglas`; ese correo no existe ni recibe nada.
+   - **Password**: una temporal de al menos 8 caracteres.
+   - Marca *Auto Confirm User*.
+
+   Cada quien puede cambiar su contraseña luego en Configuración → Nube. Si
+   alguien la olvida, se la cambias desde esta misma pantalla.
 
 ## 4. Conectar la app
 
@@ -59,11 +65,19 @@ VITE_SUPABASE_ANON_KEY=eyJ...
 
 1. Abre la app, botón de nube arriba a la derecha → inicia sesión.
 2. Con la empresa que quieres compartir abierta: **Configuración → Nube →
-   Subir a la nube**. Quedas como *Dueño*.
-3. En la misma tarjeta, agrega por correo a las demás personas como *Editor* o
-   *Solo lectura*.
+   Subir a la nube**. Quedas como *Administrador*.
+3. En la misma tarjeta, agrega a las demás personas por su usuario y elige su
+   rango. Cada empresa tiene su propia lista de personas.
+
 4. Ellas inician sesión en su equipo y abren la empresa desde el selector de
    empresas (sección "En la nube").
+
+| Rango | Qué puede hacer |
+| --- | --- |
+| Administrador | Todo, incluido agregar y quitar personas y borrar la empresa de la nube |
+| Editor | Ve y modifica todos los datos |
+| Solo lectura | Ve todo, no modifica nada |
+| Costos | Solo la lista de costos: registra y edita pagos. La nube nunca le envía salarios, registro diario ni el resto de la empresa |
 
 ## Cómo se comporta
 

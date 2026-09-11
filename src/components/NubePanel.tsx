@@ -8,9 +8,17 @@ import { Button, Card, CardHeader, ConfirmDialog, Field, IconButton, inputClass 
 import type { Tone } from "./ui"
 
 const ROLE_LABEL: Record<CompanyRole, string> = {
-  owner: "Dueño",
+  owner: "Administrador",
   editor: "Editor",
   viewer: "Solo lectura",
+  costos: "Costos",
+}
+
+const ROLE_HELP: Record<CompanyRole, string> = {
+  owner: "Todo, incluido agregar y quitar personas.",
+  editor: "Ve y modifica todos los datos.",
+  viewer: "Ve todo, no modifica nada.",
+  costos: "Solo la pestaña Costos: registra y edita pagos. No ve salarios, registro diario ni dashboard.",
 }
 
 /**
@@ -71,7 +79,7 @@ export default function NubePanel({
                   {cloud.company?.updatedByEmail && cloud.status !== "local" && (
                     <>
                       {" "}
-                      Último guardado de {cloud.company.updatedByEmail} el{" "}
+                      Último guardado de {api.displayUser(cloud.company.updatedByEmail)} el{" "}
                       {new Date(cloud.company.updatedAt).toLocaleString("es-PA", {
                         dateStyle: "short",
                         timeStyle: "short",
@@ -186,7 +194,7 @@ function Members({
   async function remove(m: CompanyMember) {
     try {
       await api.removeMember(companyId, m.userId)
-      onNotify(`${m.email} ya no tiene acceso`, "muted")
+      onNotify(`${api.displayUser(m.email)} ya no tiene acceso`, "muted")
       load()
     } catch (err) {
       onNotify(err instanceof Error ? err.message : "No se pudo quitar", "danger")
@@ -200,10 +208,10 @@ function Members({
         {members === null && <div className="px-3.5 py-2.5 text-xs text-subtle">Cargando…</div>}
         {members?.map((m) => (
           <div key={m.userId} className="flex items-center gap-2 px-3.5 py-2">
-            <span className="text-sm text-fg truncate flex-1">{m.email}</span>
+            <span className="text-sm text-fg truncate flex-1">{api.displayUser(m.email)}</span>
             <span className="text-[11px] font-bold text-subtle">{ROLE_LABEL[m.role]}</span>
             {isOwner && m.role !== "owner" && (
-              <IconButton icon="x" label={`Quitar a ${m.email}`} tone="danger" onClick={() => remove(m)} />
+              <IconButton icon="x" label={`Quitar a ${api.displayUser(m.email)}`} tone="danger" onClick={() => remove(m)} />
             )}
           </div>
         ))}
@@ -218,12 +226,14 @@ function Members({
           }}
         >
           <input
-            type="email"
-            placeholder="correo@empresa.com"
+            type="text"
+            autoCapitalize="none"
+            spellCheck={false}
+            placeholder="usuario, p. ej. kathy"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             className={`${inputClass} flex-1`}
-            aria-label="Correo de la persona a invitar"
+            aria-label="Usuario de la persona a agregar"
           />
           <select
             value={role}
@@ -233,7 +243,8 @@ function Members({
           >
             <option value="editor">Editor</option>
             <option value="viewer">Solo lectura</option>
-            <option value="owner">Dueño</option>
+            <option value="costos">Costos</option>
+            <option value="owner">Administrador</option>
           </select>
           <Button type="submit" variant="primary" icon="plus" disabled={busy || !email.trim()}>
             Agregar
@@ -242,7 +253,8 @@ function Members({
       )}
       {isOwner && (
         <p className="text-[11px] text-subtle mt-1.5">
-          La persona debe tener cuenta creada en la nube (Supabase → Authentication → Users).
+          {ROLE_HELP[role]} La persona debe tener cuenta creada en Supabase → Authentication →
+          Users, como <code>usuario@planilla.local</code>.
         </p>
       )}
     </div>

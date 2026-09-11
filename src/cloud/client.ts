@@ -29,7 +29,26 @@ function sb(): SupabaseClient {
   return client
 }
 
-export type CompanyRole = "owner" | "editor" | "viewer"
+export type CompanyRole = "owner" | "editor" | "viewer" | "costos"
+
+/**
+ * Las cuentas se crean en Supabase como `usuario@planilla.local`: Auth exige
+ * un correo, pero nadie tiene que escribirlo ni recibirlo. Quien entra escribe
+ * solo "douglas"; un correo completo también se acepta tal cual.
+ */
+export const USERNAME_DOMAIN = "planilla.local"
+
+export function toLoginEmail(user: string): string {
+  const clean = user.trim().toLowerCase()
+  return clean.includes("@") ? clean : `${clean}@${USERNAME_DOMAIN}`
+}
+
+/** Cómo se muestra una cuenta: el usuario a secas si es de las internas. */
+export function displayUser(email: string | null | undefined): string {
+  if (!email) return ""
+  const suffix = `@${USERNAME_DOMAIN}`
+  return email.toLowerCase().endsWith(suffix) ? email.slice(0, -suffix.length) : email
+}
 
 export interface CloudCompany {
   id: string
@@ -56,7 +75,7 @@ export interface CompanyMember {
 /** Traduce los errores más comunes de Supabase a algo que se entienda. */
 function message(err: unknown): string {
   const raw = (err as any)?.message ? String((err as any).message) : String(err)
-  if (/invalid login credentials/i.test(raw)) return "Correo o contraseña incorrectos."
+  if (/invalid login credentials/i.test(raw)) return "Usuario o contraseña incorrectos."
   if (/email not confirmed/i.test(raw)) return "El correo todavía no está confirmado."
   if (/failed to fetch|network/i.test(raw)) return "Sin conexión con la nube."
   if (/jwt expired/i.test(raw)) return "La sesión venció. Vuelve a iniciar sesión."
@@ -82,7 +101,7 @@ export function onSessionChange(cb: (session: Session | null) => void): () => vo
 }
 
 export async function signIn(email: string, password: string): Promise<void> {
-  const { error } = await sb().auth.signInWithPassword({ email: email.trim(), password })
+  const { error } = await sb().auth.signInWithPassword({ email: toLoginEmail(email), password })
   if (error) fail(error)
 }
 
@@ -98,27 +117,24 @@ export async function changePassword(password: string): Promise<void> {
 
 /* ----------------------------- Empresas ------------------------------ */
 
-/** Empresas donde el usuario es miembro. No trae `data`: puede pesar mucho. */
+/**
+ * Empresas donde el usuario es miembro. No trae `data`: puede pesar mucho, y
+ * el rol costos no debe recibirlo nunca. Va por función porque ese rol no
+ * puede leer la tabla directamente.
+ */
 export async function listCompanies(): Promise<CloudCompany[]> {
-  const { data, error } = await sb()
-    .from("company_members")
-    .select("role, companies(id, name, revision, updated_at, updated_by_email)")
+  const { data, error } = await sb().rpc("my_companies")
   if (error) fail(error)
   return (data ?? [])
-    .map((row: any) => {
-      const c = Array.isArray(row.companies) ? row.companies[0] : row.companies
-      if (!c) return null
-      return {
-        id: c.id,
-        name: c.name ?? "",
-        revision: Number(c.revision),
-        updatedAt: c.updated_at,
-        updatedByEmail: c.updated_by_email ?? "",
-        role: row.role as CompanyRole,
-      }
-    })
-    .filter((c): c is CloudCompany => c !== null)
-    .sort((a, b) => a.name.localeCompare(b.name, "es"))
+    .map((c: any) => ({
+      id: c.id,
+      name: c.name ?? "",
+      revision: Number(c.revision),
+      updatedAt: c.updated_at,
+      updatedByEmail: c.updated_by_email ?? "",
+      role: c.role as CompanyRole,
+    }))
+    .sort((a: CloudCompany, b: CloudCompany) => a.name.localeCompare(b.name, "es"))
 }
 
 export async function fetchCompany(id: string): Promise<CloudSnapshot> {
@@ -138,9 +154,10 @@ export async function fetchCompany(id: string): Promise<CloudSnapshot> {
 
 /** Solo la revisión: para saber si hay algo nuevo sin bajar todo el JSON. */
 export async function fetchRevision(id: string): Promise<number> {
-  const { data, error } = await sb().from("companies").select("revision").eq("id", id).single()
+  const { data, error } = await sb().rpc("company_revision", { p_company: id })
   if (error) fail(error)
-  return Number(data.revision)
+  if (data === null || data === undefined) fail("No tienes acceso a esta empresa.")
+  return Number(data)
 }
 
 export async function createCompany(
@@ -210,6 +227,45 @@ export function subscribeCompany(id: string, onRevision: (revision: number) => v
   }
 }
 
+/* ------------------------------ Costos ------------------------------- */
+
+/**
+ * Lo único que ve el rol costos: la lista de pagos y la revisión. El resto de
+ * la empresa (salarios, registro diario) nunca sale del servidor.
+ */
+export async function fetchCosts(companyId: string): Promise<{
+  costs: unknown[]
+  revision: number
+  updatedAt: string
+  updatedByEmail: string
+}> {
+  const { data, error } = await sb().rpc("get_company_costs", { p_company: companyId })
+  if (error) fail(error)
+  const row = Array.isArray(data) ? data[0] : data
+  if (!row) fail("No tienes acceso a esta empresa.")
+  return {
+    costs: Array.isArray(row.costs) ? row.costs : [],
+    revision: Number(row.revision),
+    updatedAt: row.updated_at,
+    updatedByEmail: row.updated_by_email ?? "",
+  }
+}
+
+export async function saveCosts(
+  companyId: string,
+  costs: unknown[],
+  expectedRevision: number,
+): Promise<SaveResult> {
+  const { data, error } = await sb().rpc("save_company_costs", {
+    p_company: companyId,
+    p_costs: costs,
+    p_expected_revision: expectedRevision,
+  })
+  if (error) fail(error)
+  if (data === null || data === undefined) return { ok: false, conflict: true }
+  return { ok: true, revision: Number(data) }
+}
+
 /* ----------------------------- Miembros ------------------------------ */
 
 export async function listMembers(companyId: string): Promise<CompanyMember[]> {
@@ -218,10 +274,10 @@ export async function listMembers(companyId: string): Promise<CompanyMember[]> {
   return (data ?? []).map((r: any) => ({ userId: r.user_id, email: r.email, role: r.role }))
 }
 
-export async function addMember(companyId: string, email: string, role: CompanyRole): Promise<void> {
+export async function addMember(companyId: string, user: string, role: CompanyRole): Promise<void> {
   const { error } = await sb().rpc("add_company_member", {
     p_company: companyId,
-    p_email: email.trim(),
+    p_email: toLoginEmail(user),
     p_role: role,
   })
   if (error) fail(error)
