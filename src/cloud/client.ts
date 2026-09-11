@@ -1,6 +1,8 @@
 import { createClient } from "@supabase/supabase-js"
 import type { Session, SupabaseClient } from "@supabase/supabase-js"
 import type { AppData } from "../types"
+import { isSection } from "./sections"
+import type { Section } from "./sections"
 
 /**
  * Acceso a Supabase. Las credenciales salen de variables de entorno del build
@@ -29,7 +31,41 @@ function sb(): SupabaseClient {
   return client
 }
 
-export type CompanyRole = "owner" | "editor" | "viewer" | "costos"
+/**
+ * Nombre de un rango. Los de fábrica son owner, editor, viewer, asistencia y
+ * costos, pero la tabla `roles` admite más: no es una lista cerrada.
+ */
+export type CompanyRole = string
+
+/** Qué permite el rango de uno en una empresa (fila de `roles`). */
+export interface RoleAccess {
+  role: CompanyRole
+  label: string
+  readsAll: boolean
+  writesAll: boolean
+  managesMembers: boolean
+  sections: Section[]
+}
+
+export interface RoleDef extends RoleAccess {
+  description: string
+}
+
+function toAccess(r: any): RoleAccess {
+  return {
+    role: String(r.role),
+    label: String(r.role_label ?? r.label ?? r.role),
+    readsAll: r.reads_all === true,
+    writesAll: r.writes_all === true,
+    managesMembers: r.manages_members === true,
+    sections: (Array.isArray(r.sections) ? r.sections : []).filter(isSection),
+  }
+}
+
+/** ¿Puede este rango cambiar algo en la nube? */
+export function canWrite(access: RoleAccess | null): boolean {
+  return !!access && (access.writesAll || access.sections.length > 0)
+}
 
 /**
  * Las cuentas se crean en Supabase como `usuario@planilla.local`: Auth exige
@@ -56,7 +92,7 @@ export interface CloudCompany {
   revision: number
   updatedAt: string
   updatedByEmail: string
-  role: CompanyRole
+  access: RoleAccess
 }
 
 export interface CloudSnapshot {
@@ -132,7 +168,7 @@ export async function listCompanies(): Promise<CloudCompany[]> {
       revision: Number(c.revision),
       updatedAt: c.updated_at,
       updatedByEmail: c.updated_by_email ?? "",
-      role: c.role as CompanyRole,
+      access: toAccess(c),
     }))
     .sort((a: CloudCompany, b: CloudCompany) => a.name.localeCompare(b.name, "es"))
 }
@@ -227,43 +263,54 @@ export function subscribeCompany(id: string, onRevision: (revision: number) => v
   }
 }
 
-/* ------------------------------ Costos ------------------------------- */
+/* ----------------------------- Secciones ----------------------------- */
 
 /**
- * Lo único que ve el rol costos: la lista de pagos y la revisión. El resto de
- * la empresa (salarios, registro diario) nunca sale del servidor.
+ * Lo único que reciben los rangos sin acceso completo: los campos de una
+ * sección (p. ej. colaboradores sin salarios y el registro diario). El resto
+ * de la empresa nunca sale del servidor.
  */
-export async function fetchCosts(companyId: string): Promise<{
-  costs: unknown[]
-  revision: number
-  updatedAt: string
-  updatedByEmail: string
-}> {
-  const { data, error } = await sb().rpc("get_company_costs", { p_company: companyId })
+export async function fetchSection(
+  companyId: string,
+  section: Section,
+): Promise<{ payload: Record<string, unknown>; revision: number; updatedAt: string; updatedByEmail: string }> {
+  const { data, error } = await sb().rpc("get_company_section", { p_company: companyId, p_section: section })
   if (error) fail(error)
   const row = Array.isArray(data) ? data[0] : data
   if (!row) fail("No tienes acceso a esta empresa.")
   return {
-    costs: Array.isArray(row.costs) ? row.costs : [],
+    payload: row.payload && typeof row.payload === "object" ? row.payload : {},
     revision: Number(row.revision),
     updatedAt: row.updated_at,
     updatedByEmail: row.updated_by_email ?? "",
   }
 }
 
-export async function saveCosts(
+export async function saveSection(
   companyId: string,
-  costs: unknown[],
+  section: Section,
+  payload: Record<string, unknown>,
   expectedRevision: number,
 ): Promise<SaveResult> {
-  const { data, error } = await sb().rpc("save_company_costs", {
+  const { data, error } = await sb().rpc("save_company_section", {
     p_company: companyId,
-    p_costs: costs,
+    p_section: section,
+    p_payload: payload,
     p_expected_revision: expectedRevision,
   })
   if (error) fail(error)
   if (data === null || data === undefined) return { ok: false, conflict: true }
   return { ok: true, revision: Number(data) }
+}
+
+/** Rangos disponibles, para el selector al agregar personas. */
+export async function listRoles(): Promise<RoleDef[]> {
+  const { data, error } = await sb()
+    .from("roles")
+    .select("role, label, description, reads_all, writes_all, manages_members, sections, sort")
+    .order("sort")
+  if (error) fail(error)
+  return (data ?? []).map((r: any) => ({ ...toAccess(r), description: r.description ?? "" }))
 }
 
 /* ----------------------------- Miembros ------------------------------ */

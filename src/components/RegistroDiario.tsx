@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react"
 import type { DayType, Employee, Loan, PayPeriod, TimeEntry } from "../types"
 import { getPeriodDates } from "../store"
 import { loanDeductionFor } from "../utils/loans"
@@ -56,9 +56,18 @@ interface Props {
   rules: PayrollRules
   loans: Loan[]
   readOnly: boolean
+  /**
+   * Oculta todo monto de dinero. Para el rango Asistencia de la nube, que
+   * registra horas sin saber cuánto cobra cada quien (y además recibe los
+   * colaboradores sin tarifas, así que los montos serían ceros de todos modos).
+   */
+  hidePay?: boolean
   onChange: (entries: TimeEntry[]) => void
   onNotify: (text: string, tone?: Tone) => void
 }
+
+/** Llega a las vistas internas sin pasarlo de mano en mano. */
+const HidePay = createContext(false)
 
 /* Clases estáticas: Tailwind no puede generar una clase construida en tiempo de ejecución. */
 const CELL_BG: Record<DayType, string> = {
@@ -121,6 +130,7 @@ export default function RegistroDiario({
   rules,
   loans,
   readOnly,
+  hidePay = false,
   onChange,
   onNotify,
 }: Props) {
@@ -277,6 +287,7 @@ export default function RegistroDiario({
   }
 
   return (
+    <HidePay.Provider value={hidePay}>
     <div className="space-y-4">
       {/* Encabezado */}
       <div className="flex items-end justify-between gap-3 flex-wrap">
@@ -402,6 +413,7 @@ export default function RegistroDiario({
         />
       )}
     </div>
+    </HidePay.Provider>
   )
 }
 
@@ -455,6 +467,7 @@ function GridView({
   onFillRow,
   onClearRow,
 }: GridProps) {
+  const hidePay = useContext(HidePay)
   const bodyRef = useRef<HTMLTableSectionElement>(null)
   const today = todayISO()
 
@@ -718,9 +731,11 @@ function GridView({
                             <span className="text-subtle">—</span>
                           )}
                         </div>
-                        <div className="text-[10px] font-mono font-bold text-ok">
-                          {totals.pay > 0 ? `$${fmt(totals.pay)}` : "—"}
-                        </div>
+                        {!hidePay && (
+                          <div className="text-[10px] font-mono font-bold text-ok">
+                            {totals.pay > 0 ? `$${fmt(totals.pay)}` : "—"}
+                          </div>
+                        )}
                       </>
                     ) : (
                       <>
@@ -740,9 +755,11 @@ function GridView({
                             </span>
                           )}
                         </div>
-                        <div className="text-[10px] font-mono font-bold text-ok">
-                          {totals.pay > 0 ? `$${fmt(totals.pay)}` : "—"}
-                        </div>
+                        {!hidePay && (
+                          <div className="text-[10px] font-mono font-bold text-ok">
+                            {totals.pay > 0 ? `$${fmt(totals.pay)}` : "—"}
+                          </div>
+                        )}
                       </>
                     )}
                   </td>
@@ -945,6 +962,7 @@ function EmployeeView({
   onFill,
   onClear,
 }: EmployeeViewProps) {
+  const hidePay = useContext(HidePay)
   const today = todayISO()
   const index = employees.findIndex((e) => e.id === selectedId)
   const employee = employees[index]
@@ -1024,7 +1042,9 @@ function EmployeeView({
             { label: "Días pagados", value: String(totals?.days ?? 0) },
             { label: "Horas", value: fmtHours(totals?.hours ?? 0) },
             { label: "Neto", value: `$${fmt(totals?.pay ?? 0)}` },
-          ].map((t) => (
+          ]
+            .filter((t) => !hidePay || t.label !== "Neto")
+            .map((t) => (
             <div key={t.label} className="rounded-xl bg-raised px-3 py-2">
               <div className="text-[10px] font-bold text-muted uppercase tracking-wide">
                 {t.label}
@@ -1223,6 +1243,7 @@ function EntryEditor({
   onDelete,
   onClose,
 }: EntryEditorProps) {
+  const hidePay = useContext(HidePay)
   const [form, setForm] = useState<TimeEntry>(
     existing ?? blankEntry(employee, date, previous),
   )
@@ -1498,7 +1519,9 @@ function EntryEditor({
           <p className="rounded-xl p-2.5 mb-3 text-[11px] bg-raised text-muted">
             {form.dayType === "vacaciones" &&
               (isDaily
-                ? `Se paga la tarifa fija de $${employee.dailyRate.toFixed(2)} si la configuración lo permite.`
+                ? hidePay
+                  ? "Se paga la tarifa diaria si la configuración lo permite."
+                  : `Se paga la tarifa fija de $${employee.dailyRate.toFixed(2)} si la configuración lo permite.`
                 : isFixed
                   ? "Incluido en el salario fijo de la quincena."
                   : "Se paga la jornada estándar si la configuración lo permite.")}
@@ -1508,7 +1531,9 @@ function EntryEditor({
                 : "Por omisión no lo paga el patrono; se ajusta en Configuración.")}
             {form.dayType === "ausencia" &&
               (isFixed
-                ? `Se descuenta $${fixedDayRate(employee).toFixed(2)} del salario fijo (día proporcional).`
+                ? hidePay
+                  ? "Se descuenta del salario fijo (día proporcional)."
+                  : `Se descuenta $${fixedDayRate(employee).toFixed(2)} del salario fijo (día proporcional).`
                 : "Día no laborado y no pagado. Queda registrado para control.")}
           </p>
         )}

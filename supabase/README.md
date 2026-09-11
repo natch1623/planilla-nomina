@@ -77,7 +77,35 @@ VITE_SUPABASE_ANON_KEY=eyJ...
 | Administrador | Todo, incluido agregar y quitar personas y borrar la empresa de la nube |
 | Editor | Ve y modifica todos los datos |
 | Solo lectura | Ve todo, no modifica nada |
-| Costos | Solo la lista de costos: registra y edita pagos. La nube nunca le envía salarios, registro diario ni el resto de la empresa |
+| Asistencia | Solo el Registro Diario: anota horas, feriados, vacaciones, incapacidades. Recibe los colaboradores **sin** tarifas, salarios ni cédula y no ve montos. No puede tocar días de quincenas cerradas |
+| Costos | Solo la lista de costos: registra y edita pagos. La nube nunca le envía salarios, registro diario ni el resto de la empresa. *(Se habilita en la app cuando esté el módulo de Costos.)* |
+
+Para cambiar el rango de alguien, elige el nuevo en la lista junto a su nombre.
+
+## Crear un rango nuevo
+
+Los rangos viven en la tabla **roles** (Table Editor → `roles`). Cada fila
+combina:
+
+| Columna | Qué significa |
+| --- | --- |
+| `role` | Nombre interno, sin espacios (p. ej. `supervisor`) |
+| `label` | Nombre que se ve en la app (p. ej. `Supervisor`) |
+| `description` | Texto de ayuda al asignarlo |
+| `reads_all` | Ve la empresa completa, salarios incluidos |
+| `writes_all` | Modifica la empresa completa |
+| `manages_members` | Agrega y quita personas |
+| `sections` | Secciones sueltas que ve y edita: `{asistencia}`, `{costos}` o `{asistencia,costos}` |
+| `sort` | Orden en la lista |
+
+Ejemplo: alguien que registra horas **y** pagos, sin ver salarios → **Insert
+row** con `role = asistencia_costos`, `label = Asistencia y costos`,
+`sections = {asistencia,costos}` y lo demás en `false`. Aparece solo en la
+app; no hay que tocar código.
+
+Una **sección nueva** (por ejemplo, "solo contabilidad") sí requiere
+programarla: el servidor tiene que saber qué parte de la empresa entrega y
+cuál acepta.
 
 ## Cómo se comporta
 

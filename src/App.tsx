@@ -26,6 +26,8 @@ import {
 } from "./store"
 import { calcPeriodSummaries, rulesFrom } from "./utils/calculations"
 import { useCloud } from "./cloud/useCloud"
+import { SECTIONS } from "./cloud/sections"
+import type { Section } from "./cloud/sections"
 import { CloudBanner, CloudButton, ConflictDialog } from "./components/Nube"
 import NubePanel from "./components/NubePanel"
 import Dashboard from "./components/Dashboard"
@@ -81,6 +83,14 @@ const TABS: TabDef[] = [
   { id: "config", label: "Configuración", short: "Ajustes", icon: "settings" },
 ]
 
+/**
+ * Secciones de la nube que esta versión sabe mostrar: las que tienen su
+ * pestaña. Cuando exista la de Costos, esa sección se habilita sola.
+ */
+const SUPPORTED_SECTIONS = (Object.keys(SECTIONS) as Section[]).filter((s) =>
+  TABS.some((t) => t.id === SECTIONS[s].tab),
+)
+
 export default function App() {
   // Índice y datos se leen juntos una sola vez: el perfil activo decide qué
   // AppData cargar, y llamarlos por separado leería el índice dos veces.
@@ -97,7 +107,7 @@ export default function App() {
     [accounting],
   )
   // Apagar el módulo estando parado en él dejaría la pestaña sin destino.
-  const activeTab: Tab = !accounting && tab === "contabilidad" ? "dashboard" : tab
+  const baseTab: Tab = !accounting && tab === "contabilidad" ? "dashboard" : tab
   const [exportMenu, setExportMenu] = useState(false)
   const [profileMenu, setProfileMenu] = useState(false)
   const [creatingProfile, setCreatingProfile] = useState(false)
@@ -312,7 +322,25 @@ export default function App() {
     openAsNewProfile,
     switchProfile,
     forgetProfiles,
+    supportedSections: SUPPORTED_SECTIONS,
   })
+
+  /**
+   * Un rango por secciones (Asistencia, Costos…) ve solo sus pestañas y la
+   * de su cuenta. Es comodidad, no seguridad: sus datos locales ya llegan
+   * recortados desde la nube, sin salarios.
+   */
+  const restricted = cloud.restricted
+  const shownTabs = useMemo(() => {
+    if (!restricted || !cloud.access) return tabs
+    const allowed = new Set<string>(cloud.access.sections.map((s) => SECTIONS[s].tab))
+    return TABS.filter((t) => allowed.has(t.id) || t.id === "config").map((t) =>
+      t.id === "config" ? { ...t, label: "Mi cuenta", short: "Cuenta" } : t,
+    )
+  }, [restricted, cloud.access, tabs])
+  const activeTab: Tab = shownTabs.some((t) => t.id === baseTab)
+    ? baseTab
+    : shownTabs[0].id
 
   const removeProfile = useCallback(
     (id: string) => {
@@ -554,7 +582,7 @@ export default function App() {
                 onChange={(theme) => setData((d) => ({ ...d, theme }))}
               />
 
-              <div className="relative">
+              <div className={`relative ${restricted ? "hidden" : ""}`}>
                 <button
                   onClick={() => setExportMenu((v) => !v)}
                   aria-expanded={exportMenu}
@@ -625,7 +653,7 @@ export default function App() {
             className="flex items-center gap-1 -mb-px overflow-x-auto"
             aria-label="Secciones"
           >
-            {tabs.map((t) => (
+            {shownTabs.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
@@ -656,12 +684,14 @@ export default function App() {
               {new Date(closed.closedAt).toLocaleDateString("es-PA")}. Los
               montos están congelados y el registro es de solo lectura.
             </span>
-            <button
-              onClick={() => setTab("config")}
-              className="ml-auto underline underline-offset-2 hover:no-underline shrink-0"
-            >
-              Reabrir
-            </button>
+            {!restricted && (
+              <button
+                onClick={() => setTab("config")}
+                className="ml-auto underline underline-offset-2 hover:no-underline shrink-0"
+              >
+                Reabrir
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -696,6 +726,7 @@ export default function App() {
               rules={rules}
               loans={data.loans}
               readOnly={!!closed}
+              hidePay={restricted}
               onChange={(timeEntries) => setData((d) => ({ ...d, timeEntries }))}
               onNotify={push}
             />
@@ -708,7 +739,12 @@ export default function App() {
               onNotify={push}
             />
           )}
-          {activeTab === "config" && (
+          {activeTab === "config" && restricted && (
+            <div className="space-y-5 max-w-3xl">
+              <NubePanel cloud={cloud} onNotify={push} />
+            </div>
+          )}
+          {activeTab === "config" && !restricted && (
             <Configuracion
               data={data}
               liveSummaries={liveSummaries}

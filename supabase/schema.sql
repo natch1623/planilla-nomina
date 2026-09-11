@@ -1,19 +1,71 @@
 -- =====================================================================
 -- Planilla: esquema de la nube (Supabase)
 --
--- Pegar completo en Supabase → SQL Editor → Run. Se puede volver a correr:
--- todo usa "if not exists" / "or replace".
+-- Pegar completo en Supabase → SQL Editor → Run. Se puede volver a correr
+-- cuantas veces haga falta: actualiza lo que ya existe sin borrar datos.
 --
 -- Modelo:
+--   roles            qué puede hacer cada rango (Administrador, Editor, …).
 --   companies        una fila por empresa; `data` es el mismo JSON (AppData)
---                    que la app guarda hoy en localStorage.
---   company_members  quién puede ver/editar cada empresa.
+--                    que la app guarda en el navegador.
+--   company_members  quién entra a cada empresa y con qué rango.
 --
 -- Seguridad: la anon key viaja en el sitio público, así que TODA la
--- protección vive en las políticas RLS de abajo. Sin sesión iniciada no se
--- lee ni una fila; con sesión, solo las empresas donde el usuario es miembro.
+-- protección vive aquí. Sin sesión no se lee nada; con sesión, solo las
+-- empresas donde uno es miembro y solo lo que su rango permite.
 -- =====================================================================
 
+
+-- ---------------------------------------------------------------------
+-- Rangos
+--
+-- Un rango combina permisos generales y "secciones". Una sección es una
+-- parte acotada de la empresa que se puede ver y editar sin recibir el
+-- resto (sobre todo sin salarios):
+--   asistencia  colaboradores SIN tarifas ni salarios + registro diario
+--   costos      lista de pagos a proveedores / terceros
+--
+-- Para crear un rango nuevo que combine secciones existentes basta con
+-- agregar una fila (Table Editor → roles → Insert). Una sección nueva sí
+-- requiere programarla aquí (get/save_company_section) y en la app.
+-- ---------------------------------------------------------------------
+create table if not exists public.roles (
+  role            text primary key,
+  label           text not null,
+  description     text not null default '',
+  -- Ve la empresa completa (salarios incluidos).
+  reads_all       boolean not null default false,
+  -- Modifica la empresa completa.
+  writes_all      boolean not null default false,
+  -- Agrega y quita personas, borra la empresa de la nube.
+  manages_members boolean not null default false,
+  -- Secciones que ve y edita aunque no tenga lo anterior.
+  sections        text[] not null default '{}',
+  sort            int not null default 100
+);
+
+alter table public.roles drop constraint if exists roles_sections_check;
+alter table public.roles add constraint roles_sections_check
+  check (sections <@ array['asistencia', 'costos']::text[]);
+
+-- Rangos de fábrica. Al volver a correr el script se restablecen sus
+-- definiciones; los rangos que agregues tú no se tocan.
+insert into public.roles (role, label, description, reads_all, writes_all, manages_members, sections, sort) values
+  ('owner',      'Administrador', 'Todo, incluido agregar y quitar personas.',                                     true,  true,  true,  '{}',             10),
+  ('editor',     'Editor',        'Ve y modifica todos los datos.',                                                true,  true,  false, '{}',             20),
+  ('viewer',     'Solo lectura',  'Ve todo, no modifica nada.',                                                    true,  false, false, '{}',             30),
+  ('asistencia', 'Asistencia',    'Registra horas en el Registro Diario. No ve salarios, tarifas ni montos.',      false, false, false, '{asistencia}',   40),
+  ('costos',     'Costos',        'Registra y edita pagos en Costos. No ve salarios, registro diario ni dashboard.', false, false, false, '{costos}',       50)
+on conflict (role) do update set
+  label = excluded.label, description = excluded.description,
+  reads_all = excluded.reads_all, writes_all = excluded.writes_all,
+  manages_members = excluded.manages_members, sections = excluded.sections,
+  sort = excluded.sort;
+
+
+-- ---------------------------------------------------------------------
+-- Empresas y miembros
+-- ---------------------------------------------------------------------
 create table if not exists public.companies (
   id          uuid primary key default gen_random_uuid(),
   name        text not null default '',
@@ -32,24 +84,20 @@ create table if not exists public.companies (
 create table if not exists public.company_members (
   company_id  uuid not null references public.companies(id) on delete cascade,
   user_id     uuid not null references auth.users(id) on delete cascade,
-  -- owner:  Administrador. Todo, incluido manejar personas y borrar la empresa.
-  -- editor: ve y modifica todos los datos.
-  -- viewer: ve todos los datos, no modifica nada.
-  -- costos: SOLO la lista de costos (ver, agregar, editar). Nunca recibe
-  --         salarios, registro diario ni el resto de la empresa: no puede
-  --         leer la tabla companies y trabaja con get/save_company_costs().
   role        text not null default 'editor',
   created_at  timestamptz not null default now(),
   primary key (company_id, user_id)
 );
 
--- Fuera del create para que al volver a correr el script se actualice la
--- lista de roles aunque la tabla ya exista.
+-- El rango tiene que existir en `roles`. (Una versión anterior del script
+-- usaba una lista fija; se reemplaza por la referencia a la tabla.)
 alter table public.company_members drop constraint if exists company_members_role_check;
-alter table public.company_members add constraint company_members_role_check
-  check (role in ('owner', 'editor', 'viewer', 'costos'));
+alter table public.company_members drop constraint if exists company_members_role_fkey;
+alter table public.company_members add constraint company_members_role_fkey
+  foreign key (role) references public.roles(role) on update cascade;
 
 create index if not exists company_members_user_idx on public.company_members(user_id);
+
 
 -- ---------------------------------------------------------------------
 -- Revisión, fecha y autor los pone el servidor, no el cliente.
@@ -71,8 +119,95 @@ create trigger companies_before_update
   before update on public.companies
   for each row execute function public.companies_before_update();
 
--- Crear empresa y quedar como owner en un solo paso. Va por función porque
--- un insert directo no podría devolver la fila: hasta que existe la
+
+-- ---------------------------------------------------------------------
+-- Permisos del usuario actual en una empresa. Security definer para que
+-- las políticas no se consulten a sí mismas (recursión infinita).
+-- ---------------------------------------------------------------------
+create or replace function public.company_role(p_company uuid)
+returns text language sql stable security definer set search_path = public as $$
+  select role from public.company_members
+  where company_id = p_company and user_id = auth.uid()
+$$;
+
+create or replace function public.company_access(p_company uuid)
+returns public.roles language sql stable security definer set search_path = public as $$
+  select r.* from public.company_members m
+  join public.roles r on r.role = m.role
+  where m.company_id = p_company and m.user_id = auth.uid()
+$$;
+
+create or replace function public.can_read_all(p_company uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((public.company_access(p_company)).reads_all, false)
+$$;
+
+create or replace function public.can_write_all(p_company uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((public.company_access(p_company)).writes_all, false)
+$$;
+
+create or replace function public.can_manage(p_company uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((public.company_access(p_company)).manages_members, false)
+$$;
+
+create or replace function public.has_section(p_company uuid, p_section text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce(p_section = any((public.company_access(p_company)).sections), false)
+$$;
+
+
+-- ---------------------------------------------------------------------
+-- Políticas
+-- ---------------------------------------------------------------------
+alter table public.roles           enable row level security;
+alter table public.companies       enable row level security;
+alter table public.company_members enable row level security;
+
+-- Doble cerrojo: aunque una política quedara mal, sin sesión no hay acceso.
+revoke all on public.roles           from anon;
+revoke all on public.companies       from anon;
+revoke all on public.company_members from anon;
+-- Los rangos se administran desde el panel de Supabase, no desde la app.
+revoke insert, update, delete on public.roles from authenticated;
+
+drop policy if exists roles_select on public.roles;
+create policy roles_select on public.roles
+  for select to authenticated using (true);
+
+-- Leer la fila es leer toda la empresa: solo rangos con reads_all. Los
+-- demás entran por get_company_section().
+drop policy if exists companies_select on public.companies;
+create policy companies_select on public.companies
+  for select to authenticated
+  using (public.can_read_all(id));
+
+-- Sin política de insert: las empresas se crean solo con create_company().
+
+drop policy if exists companies_update on public.companies;
+create policy companies_update on public.companies
+  for update to authenticated
+  using (public.can_write_all(id))
+  with check (public.can_write_all(id));
+
+drop policy if exists companies_delete on public.companies;
+create policy companies_delete on public.companies
+  for delete to authenticated
+  using (public.can_manage(id));
+
+drop policy if exists members_select on public.company_members;
+create policy members_select on public.company_members
+  for select to authenticated
+  using (public.company_role(company_id) is not null);
+
+
+-- ---------------------------------------------------------------------
+-- Empresas
+-- ---------------------------------------------------------------------
+
+-- Crear empresa y quedar como Administrador en un solo paso. Va por función
+-- porque un insert directo no podría devolver la fila: hasta que existe la
 -- membresía, RLS no deja leerla.
 create or replace function public.create_company(p_name text, p_data jsonb)
 returns table (id uuid, revision bigint)
@@ -91,71 +226,169 @@ begin
   return query select c.id, c.revision from public.companies c where c.id = v_id;
 end $$;
 
--- ---------------------------------------------------------------------
--- Helpers para RLS. Son security definer para que la política de
--- company_members no se consulte a sí misma (recursión infinita).
--- ---------------------------------------------------------------------
-create or replace function public.company_role(p_company uuid)
-returns text language sql stable security definer set search_path = public as $$
-  select role from public.company_members
-  where company_id = p_company and user_id = auth.uid()
+-- Empresas del usuario con los permisos de su rango, sin el JSON de datos.
+drop function if exists public.my_companies();
+create or replace function public.my_companies()
+returns table (
+  id uuid, name text, revision bigint, updated_at timestamptz, updated_by_email text,
+  role text, role_label text, reads_all boolean, writes_all boolean,
+  manages_members boolean, sections text[]
+)
+language sql stable security definer set search_path = public as $$
+  select c.id, c.name, c.revision, c.updated_at, c.updated_by_email,
+         r.role, r.label, r.reads_all, r.writes_all, r.manages_members, r.sections
+  from public.company_members m
+  join public.companies c on c.id = m.company_id
+  join public.roles r on r.role = m.role
+  where m.user_id = auth.uid()
+  order by c.name
 $$;
 
--- ---------------------------------------------------------------------
--- Políticas
--- ---------------------------------------------------------------------
-alter table public.companies       enable row level security;
-alter table public.company_members enable row level security;
+create or replace function public.company_revision(p_company uuid)
+returns bigint language sql stable security definer set search_path = public as $$
+  select c.revision from public.companies c
+  where c.id = p_company and public.company_role(p_company) is not null
+$$;
 
--- Doble cerrojo: aunque una política quedara mal, sin sesión no hay acceso.
-revoke all on public.companies       from anon;
-revoke all on public.company_members from anon;
-
--- El rol costos queda fuera a propósito: leer la fila es leer toda la
--- empresa, salarios incluidos.
-drop policy if exists companies_select on public.companies;
-create policy companies_select on public.companies
-  for select to authenticated
-  using (public.company_role(id) in ('owner', 'editor', 'viewer'));
-
--- Sin política de insert: las empresas se crean solo con create_company().
-
-drop policy if exists companies_update on public.companies;
-create policy companies_update on public.companies
-  for update to authenticated
-  using (public.company_role(id) in ('owner', 'editor'))
-  with check (public.company_role(id) in ('owner', 'editor'));
-
-drop policy if exists companies_delete on public.companies;
-create policy companies_delete on public.companies
-  for delete to authenticated
-  using (public.company_role(id) = 'owner');
-
--- Cada miembro ve la lista de miembros de sus empresas; solo el owner la
--- modifica (y lo hace por medio de las funciones de abajo).
-drop policy if exists members_select on public.company_members;
-create policy members_select on public.company_members
-  for select to authenticated
-  using (public.company_role(company_id) is not null);
 
 -- ---------------------------------------------------------------------
--- Invitar / quitar miembros por correo. El usuario debe existir ya en
--- Authentication → Users.
+-- Secciones: la única puerta de los rangos sin reads_all a los datos.
+-- Solo entra y sale lo de la sección; el resto nunca viaja.
+-- ---------------------------------------------------------------------
+
+-- Clave de quincena igual a la de la app: 2026-09-1 / 2026-09-2.
+create or replace function public.period_key(p_date text)
+returns text language sql immutable as $$
+  select to_char(p_date::date, 'YYYY-MM') || '-' ||
+         case when extract(day from p_date::date) <= 15 then '1' else '2' end
+$$;
+
+create or replace function public.section_payload(p_data jsonb, p_section text)
+returns jsonb language sql immutable as $$
+  select case p_section
+    when 'asistencia' then jsonb_build_object(
+      'version',           p_data -> 'version',
+      'companyName',       p_data -> 'companyName',
+      -- Colaboradores sin tarifas, salario, cédula ni deducciones.
+      'employees', coalesce((
+        select jsonb_agg(jsonb_build_object(
+          'id', e -> 'id', 'name', e -> 'name', 'position', e -> 'position',
+          'category', e -> 'category', 'paymentType', e -> 'paymentType',
+          'schedule', e -> 'schedule', 'active', e -> 'active'))
+        from jsonb_array_elements(coalesce(p_data -> 'employees', '[]')) e), '[]'),
+      'timeEntries',       coalesce(p_data -> 'timeEntries', '[]'),
+      -- Solo qué quincenas están cerradas, sin los montos congelados.
+      'closedPeriods', coalesce((
+        select jsonb_agg(jsonb_build_object(
+          'key', c -> 'key', 'period', c -> 'period', 'closedAt', c -> 'closedAt',
+          'summaries', '[]'::jsonb))
+        from jsonb_array_elements(coalesce(p_data -> 'closedPeriods', '[]')) c), '[]'),
+      -- Reglas de horas (umbral de extra, jornada): necesarias para contar horas.
+      'overtimeThreshold', p_data -> 'overtimeThreshold',
+      'standardDayHours',  p_data -> 'standardDayHours',
+      'holidayRate',       p_data -> 'holidayRate',
+      'payVacations',      p_data -> 'payVacations',
+      'payHolidays',       p_data -> 'payHolidays',
+      'paySickLeave',      p_data -> 'paySickLeave')
+    when 'costos' then jsonb_build_object(
+      'version',     p_data -> 'version',
+      'companyName', p_data -> 'companyName',
+      'costs',       coalesce(p_data -> 'costs', '[]'))
+  end
+$$;
+
+create or replace function public.get_company_section(p_company uuid, p_section text)
+returns table (payload jsonb, revision bigint, updated_at timestamptz, updated_by_email text)
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not (public.can_read_all(p_company) or public.has_section(p_company, p_section)) then
+    raise exception 'No tienes acceso a esta sección';
+  end if;
+  return query
+    select public.section_payload(c.data, p_section), c.revision, c.updated_at, c.updated_by_email
+    from public.companies c where c.id = p_company;
+end $$;
+
+-- Devuelve la revisión nueva, o null si otra persona guardó antes.
+create or replace function public.save_company_section(
+  p_company uuid, p_section text, p_payload jsonb, p_expected_revision bigint)
+returns bigint language plpgsql security definer set search_path = public as $$
+declare
+  v_data   jsonb;
+  v_closed text[];
+  v_rev    bigint;
+begin
+  if not (public.can_write_all(p_company) or public.has_section(p_company, p_section)) then
+    raise exception 'No tienes permiso para modificar esta sección';
+  end if;
+
+  select data into v_data from public.companies
+   where id = p_company and revision = p_expected_revision
+   for update;
+  if v_data is null then
+    return null; -- otra persona guardó antes (o la empresa no existe)
+  end if;
+
+  if p_section = 'asistencia' then
+    if jsonb_typeof(p_payload -> 'timeEntries') is distinct from 'array' then
+      raise exception 'Formato de registros inválido';
+    end if;
+    -- Los días de quincenas cerradas no se tocan: se conservan los que hay
+    -- y se ignora lo que llegue para esas fechas.
+    select coalesce(array_agg(c ->> 'key'), '{}') into v_closed
+      from jsonb_array_elements(coalesce(v_data -> 'closedPeriods', '[]')) c;
+    v_data := jsonb_set(v_data, '{timeEntries}', coalesce((
+      select jsonb_agg(e) from (
+        select e from jsonb_array_elements(coalesce(v_data -> 'timeEntries', '[]')) e
+         where public.period_key(e ->> 'date') = any(v_closed)
+        union all
+        select e from jsonb_array_elements(p_payload -> 'timeEntries') e
+         where not (public.period_key(e ->> 'date') = any(v_closed))
+      ) t), '[]'));
+
+  elsif p_section = 'costos' then
+    if jsonb_typeof(p_payload -> 'costs') is distinct from 'array' then
+      raise exception 'Formato de costos inválido';
+    end if;
+    v_data := jsonb_set(v_data, '{costs}', p_payload -> 'costs', true);
+
+  else
+    raise exception 'Sección desconocida: %', p_section;
+  end if;
+
+  update public.companies set data = v_data
+   where id = p_company
+  returning revision into v_rev;
+  return v_rev;
+end $$;
+
+-- Versión anterior del script (solo costos); reemplazada por las de arriba.
+drop function if exists public.get_company_costs(uuid);
+drop function if exists public.save_company_costs(uuid, jsonb, bigint);
+
+
+-- ---------------------------------------------------------------------
+-- Personas. El usuario debe existir ya en Authentication → Users.
 -- ---------------------------------------------------------------------
 create or replace function public.add_company_member(p_company uuid, p_email text, p_role text default 'editor')
 returns void language plpgsql security definer set search_path = public as $$
 declare
   v_user uuid;
 begin
-  if public.company_role(p_company) is distinct from 'owner' then
+  if not public.can_manage(p_company) then
     raise exception 'Solo un administrador de la empresa puede agregar personas';
   end if;
-  if p_role not in ('owner', 'editor', 'viewer', 'costos') then
-    raise exception 'Rol inválido: %', p_role;
+  if not exists (select 1 from public.roles where role = p_role) then
+    raise exception 'Rango inválido: %', p_role;
   end if;
   select id into v_user from auth.users where lower(email) = lower(trim(p_email));
   if v_user is null then
     raise exception 'No existe el usuario %', split_part(p_email, '@', 1);
+  end if;
+  if v_user = auth.uid() and not exists (
+    select 1 from public.roles where role = p_role and manages_members
+  ) then
+    raise exception 'No puedes quitarte a ti mismo el rango de administrador';
   end if;
   insert into public.company_members (company_id, user_id, role)
   values (p_company, v_user, p_role)
@@ -165,7 +398,7 @@ end $$;
 create or replace function public.remove_company_member(p_company uuid, p_user uuid)
 returns void language plpgsql security definer set search_path = public as $$
 begin
-  if public.company_role(p_company) is distinct from 'owner' then
+  if not public.can_manage(p_company) then
     raise exception 'Solo un administrador de la empresa puede quitar personas';
   end if;
   if p_user = auth.uid() then
@@ -186,83 +419,34 @@ language sql stable security definer set search_path = public as $$
   order by u.email
 $$;
 
--- ---------------------------------------------------------------------
--- Lectura liviana para todos los roles (costos incluido): lista de
--- empresas y revisión, sin el JSON de datos.
--- ---------------------------------------------------------------------
-create or replace function public.my_companies()
-returns table (id uuid, name text, revision bigint, updated_at timestamptz, updated_by_email text, role text)
-language sql stable security definer set search_path = public as $$
-  select c.id, c.name, c.revision, c.updated_at, c.updated_by_email, m.role
-  from public.company_members m
-  join public.companies c on c.id = m.company_id
-  where m.user_id = auth.uid()
-  order by c.name
-$$;
-
-create or replace function public.company_revision(p_company uuid)
-returns bigint language sql stable security definer set search_path = public as $$
-  select c.revision from public.companies c
-  where c.id = p_company and public.company_role(p_company) is not null
-$$;
 
 -- ---------------------------------------------------------------------
--- Costos: la única puerta del rol costos a los datos. Solo entra y sale
--- la lista `costs` del JSON; el resto de la empresa nunca viaja.
+-- Quién puede llamar a cada función: solo usuarios con sesión.
 -- ---------------------------------------------------------------------
-create or replace function public.get_company_costs(p_company uuid)
-returns table (costs jsonb, revision bigint, updated_at timestamptz, updated_by_email text)
-language plpgsql stable security definer set search_path = public as $$
-begin
-  if public.company_role(p_company) is null then
-    raise exception 'No tienes acceso a esta empresa';
-  end if;
-  return query
-    select coalesce(c.data -> 'costs', '[]'::jsonb), c.revision, c.updated_at, c.updated_by_email
-    from public.companies c where c.id = p_company;
-end $$;
-
--- Devuelve la revisión nueva, o null si otra persona guardó antes
--- (misma regla de "solo si la revisión sigue siendo la que conozco").
-create or replace function public.save_company_costs(p_company uuid, p_costs jsonb, p_expected_revision bigint)
-returns bigint language plpgsql security definer set search_path = public as $$
+do $$
 declare
-  v_rev bigint;
+  f text;
 begin
-  if coalesce(public.company_role(p_company), '') not in ('owner', 'editor', 'costos') then
-    raise exception 'No tienes permiso para modificar costos en esta empresa';
-  end if;
-  if jsonb_typeof(p_costs) is distinct from 'array' then
-    raise exception 'Formato de costos inválido';
-  end if;
-  update public.companies
-     set data = jsonb_set(data, '{costs}', p_costs, true)
-   where id = p_company and revision = p_expected_revision
-  returning revision into v_rev;
-  return v_rev;
+  foreach f in array array[
+    'public.create_company(text, jsonb)',
+    'public.my_companies()',
+    'public.company_revision(uuid)',
+    'public.get_company_section(uuid, text)',
+    'public.save_company_section(uuid, text, jsonb, bigint)',
+    'public.add_company_member(uuid, text, text)',
+    'public.remove_company_member(uuid, uuid)',
+    'public.list_company_members(uuid)'
+  ] loop
+    execute format('revoke all on function %s from public, anon', f);
+    execute format('grant execute on function %s to authenticated', f);
+  end loop;
 end $$;
 
-revoke all on function public.my_companies()                         from public, anon;
-revoke all on function public.company_revision(uuid)                 from public, anon;
-revoke all on function public.get_company_costs(uuid)                from public, anon;
-revoke all on function public.save_company_costs(uuid, jsonb, bigint) from public, anon;
-grant execute on function public.my_companies()                         to authenticated;
-grant execute on function public.company_revision(uuid)                 to authenticated;
-grant execute on function public.get_company_costs(uuid)                to authenticated;
-grant execute on function public.save_company_costs(uuid, jsonb, bigint) to authenticated;
-
-revoke all on function public.create_company(text, jsonb)            from public, anon;
-grant execute on function public.create_company(text, jsonb)          to authenticated;
-revoke all on function public.add_company_member(uuid, text, text)   from public, anon;
-revoke all on function public.remove_company_member(uuid, uuid)      from public, anon;
-revoke all on function public.list_company_members(uuid)             from public, anon;
-grant execute on function public.add_company_member(uuid, text, text) to authenticated;
-grant execute on function public.remove_company_member(uuid, uuid)    to authenticated;
-grant execute on function public.list_company_members(uuid)           to authenticated;
 
 -- ---------------------------------------------------------------------
 -- Tiempo real: avisar a los demás cuando alguien guarda.
--- (Respeta RLS: solo llegan avisos de empresas donde uno es miembro.)
+-- (Respeta RLS: solo llegan avisos de empresas que uno puede leer; los
+-- rangos por sección se enteran consultando la revisión cada tanto.)
 -- ---------------------------------------------------------------------
 do $$
 begin

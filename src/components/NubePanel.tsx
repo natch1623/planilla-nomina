@@ -1,24 +1,27 @@
 import { useCallback, useEffect, useState } from "react"
 import * as api from "../cloud/client"
-import type { CompanyMember, CompanyRole } from "../cloud/client"
+import type { CompanyMember, CompanyRole, RoleDef } from "../cloud/client"
 import type { Cloud } from "../cloud/useCloud"
 import Icon from "./Icon"
 import { STATUS_INFO } from "./Nube"
 import { Button, Card, CardHeader, ConfirmDialog, Field, IconButton, inputClass } from "./ui"
 import type { Tone } from "./ui"
 
-const ROLE_LABEL: Record<CompanyRole, string> = {
+/**
+ * Los rangos vienen de la tabla `roles` de la nube, así que uno nuevo
+ * aparece aquí sin tocar la app. Estos nombres solo cubren el rato en que
+ * la lista todavía está cargando.
+ */
+const FALLBACK_LABEL: Record<string, string> = {
   owner: "Administrador",
   editor: "Editor",
   viewer: "Solo lectura",
+  asistencia: "Asistencia",
   costos: "Costos",
 }
 
-const ROLE_HELP: Record<CompanyRole, string> = {
-  owner: "Todo, incluido agregar y quitar personas.",
-  editor: "Ve y modifica todos los datos.",
-  viewer: "Ve todo, no modifica nada.",
-  costos: "Solo la pestaña Costos: registra y edita pagos. No ve salarios, registro diario ni dashboard.",
+function roleLabel(roles: RoleDef[], role: CompanyRole): string {
+  return roles.find((r) => r.role === role)?.label ?? FALLBACK_LABEL[role] ?? role
 }
 
 /**
@@ -68,9 +71,9 @@ export default function NubePanel({
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-fg">
                   {info.label}
-                  {cloud.role && (
+                  {cloud.access && (
                     <span className="ml-2 text-[11px] font-bold text-subtle">
-                      · {ROLE_LABEL[cloud.role]}
+                      · {cloud.access.label}
                     </span>
                   )}
                 </div>
@@ -104,7 +107,11 @@ export default function NubePanel({
           </div>
 
           {cloud.link && cloud.company && (
-            <Members companyId={cloud.company.id} isOwner={cloud.role === "owner"} onNotify={onNotify} />
+            <Members
+              companyId={cloud.company.id}
+              canManage={cloud.access?.managesMembers === true}
+              onNotify={onNotify}
+            />
           )}
 
           {cloud.link && (
@@ -112,7 +119,7 @@ export default function NubePanel({
               <Button size="sm" disabled={busy} onClick={() => setConfirm("unlink")}>
                 Dejar de sincronizar aquí
               </Button>
-              {cloud.role === "owner" && (
+              {cloud.access?.managesMembers && (
                 <Button size="sm" variant="danger" icon="trash" disabled={busy} onClick={() => setConfirm("delete")}>
                   Eliminar de la nube
                 </Button>
@@ -156,14 +163,15 @@ export default function NubePanel({
 
 function Members({
   companyId,
-  isOwner,
+  canManage,
   onNotify,
 }: {
   companyId: string
-  isOwner: boolean
+  canManage: boolean
   onNotify: (msg: string, tone?: Tone) => void
 }) {
   const [members, setMembers] = useState<CompanyMember[] | null>(null)
+  const [roles, setRoles] = useState<RoleDef[]>([])
   const [email, setEmail] = useState("")
   const [role, setRole] = useState<CompanyRole>("editor")
   const [busy, setBusy] = useState(false)
@@ -176,6 +184,26 @@ function Members({
   }, [companyId])
 
   useEffect(load, [load])
+
+  useEffect(() => {
+    api
+      .listRoles()
+      .then(setRoles)
+      .catch(() => setRoles([]))
+  }, [])
+
+  const selected = roles.find((r) => r.role === role)
+
+  async function changeRole(m: CompanyMember, next: CompanyRole) {
+    try {
+      // Agregar a alguien que ya está solo le cambia el rango.
+      await api.addMember(companyId, m.email, next)
+      onNotify(`${api.displayUser(m.email)} ahora es ${roleLabel(roles, next)}`)
+      load()
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : "No se pudo cambiar el rango", "danger")
+    }
+  }
 
   async function add() {
     setBusy(true)
@@ -209,15 +237,35 @@ function Members({
         {members?.map((m) => (
           <div key={m.userId} className="flex items-center gap-2 px-3.5 py-2">
             <span className="text-sm text-fg truncate flex-1">{api.displayUser(m.email)}</span>
-            <span className="text-[11px] font-bold text-subtle">{ROLE_LABEL[m.role]}</span>
-            {isOwner && m.role !== "owner" && (
-              <IconButton icon="x" label={`Quitar a ${api.displayUser(m.email)}`} tone="danger" onClick={() => remove(m)} />
+            {canManage && roles.length > 0 ? (
+              <select
+                value={m.role}
+                onChange={(e) => void changeRole(m, e.target.value)}
+                aria-label={`Rango de ${api.displayUser(m.email)}`}
+                className="bg-transparent text-[11px] font-bold text-subtle focus:outline-none cursor-pointer"
+              >
+                {roles.map((r) => (
+                  <option key={r.role} value={r.role}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-[11px] font-bold text-subtle">{roleLabel(roles, m.role)}</span>
+            )}
+            {canManage && (
+              <IconButton
+                icon="x"
+                label={`Quitar a ${api.displayUser(m.email)}`}
+                tone="danger"
+                onClick={() => remove(m)}
+              />
             )}
           </div>
         ))}
       </div>
 
-      {isOwner && (
+      {canManage && (
         <form
           className="mt-3 flex flex-col sm:flex-row gap-2"
           onSubmit={(e) => {
@@ -237,24 +285,26 @@ function Members({
           />
           <select
             value={role}
-            onChange={(e) => setRole(e.target.value as CompanyRole)}
-            className={`${inputClass} sm:w-36`}
-            aria-label="Permiso"
+            onChange={(e) => setRole(e.target.value)}
+            className={`${inputClass} sm:w-40`}
+            aria-label="Rango"
           >
-            <option value="editor">Editor</option>
-            <option value="viewer">Solo lectura</option>
-            <option value="costos">Costos</option>
-            <option value="owner">Administrador</option>
+            {(roles.length > 0 ? roles : [{ role: "editor", label: "Editor" }]).map((r) => (
+              <option key={r.role} value={r.role}>
+                {r.label}
+              </option>
+            ))}
           </select>
           <Button type="submit" variant="primary" icon="plus" disabled={busy || !email.trim()}>
             Agregar
           </Button>
         </form>
       )}
-      {isOwner && (
+      {canManage && (
         <p className="text-[11px] text-subtle mt-1.5">
-          {ROLE_HELP[role]} La persona debe tener cuenta creada en Supabase → Authentication →
-          Users, como <code>usuario@planilla.local</code>.
+          {selected?.description ? `${selected.label}: ${selected.description} ` : ""}
+          La persona debe tener cuenta creada en Supabase → Authentication → Users, como{" "}
+          <code>usuario@planilla.local</code>.
         </p>
       )}
     </div>
