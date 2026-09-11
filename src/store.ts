@@ -754,6 +754,118 @@ export function importJSON(file: File): Promise<AppData> {
   })
 }
 
+export interface MergePreview {
+  newEmployees: number
+  updatedEmployees: number
+  newEntries: number
+  updatedEntries: number
+  newAdjustments: number
+  newClosedPeriods: number
+  skippedClosedPeriods: number
+  newTransactions: number
+  newCounterparties: number
+  newBudgets: number
+  newLoans: number
+  newGoals: number
+}
+
+function mergeById<T extends { id: string }>(
+  current: T[],
+  incoming: T[],
+): { merged: T[]; added: number; updated: number } {
+  const map = new Map(current.map((x) => [x.id, x]))
+  let added = 0
+  let updated = 0
+  for (const item of incoming) {
+    if (map.has(item.id)) updated++
+    else added++
+    map.set(item.id, item)
+  }
+  return { merged: [...map.values()], added, updated }
+}
+
+/**
+ * Combina un respaldo importado con los datos actuales en vez de
+ * reemplazarlos: así se puede cargar el archivo de un tercer colaborador sin
+ * borrar lo ya cargado de los primeros dos. Las quincenas cerradas nunca se
+ * pisan (son montos ya pagados); todo lo demás se identifica por `id`, salvo
+ * los registros diarios, que se identifican por colaborador + fecha porque
+ * dos archivos distintos generan ids distintos para "el mismo día".
+ */
+export function mergeAppData(
+  current: AppData,
+  incoming: AppData,
+): { data: AppData; preview: MergePreview } {
+  const employees = mergeById(current.employees, incoming.employees)
+
+  const entryKey = (e: TimeEntry) => `${e.employeeId}__${e.date}`
+  const entryMap = new Map(current.timeEntries.map((e) => [entryKey(e), e]))
+  let newEntries = 0
+  let updatedEntries = 0
+  for (const e of incoming.timeEntries) {
+    const k = entryKey(e)
+    if (entryMap.has(k)) updatedEntries++
+    else newEntries++
+    entryMap.set(k, e)
+  }
+
+  const adjustments = mergeById(
+    current.manualAdjustments,
+    incoming.manualAdjustments,
+  )
+
+  const closedMap = new Map(current.closedPeriods.map((c) => [c.key, c]))
+  let newClosedPeriods = 0
+  let skippedClosedPeriods = 0
+  for (const c of incoming.closedPeriods) {
+    if (closedMap.has(c.key)) {
+      skippedClosedPeriods++
+    } else {
+      closedMap.set(c.key, c)
+      newClosedPeriods++
+    }
+  }
+
+  const transactions = mergeById(current.transactions, incoming.transactions)
+  const counterparties = mergeById(
+    current.counterparties,
+    incoming.counterparties,
+  )
+  const budgets = mergeById(current.budgets, incoming.budgets)
+  const loans = mergeById(current.loans, incoming.loans)
+  const goals = mergeById(current.goals, incoming.goals)
+
+  const data: AppData = {
+    ...current,
+    employees: employees.merged,
+    timeEntries: [...entryMap.values()],
+    manualAdjustments: adjustments.merged,
+    closedPeriods: [...closedMap.values()],
+    transactions: transactions.merged,
+    counterparties: counterparties.merged,
+    budgets: budgets.merged,
+    loans: loans.merged,
+    goals: goals.merged,
+  }
+
+  const preview: MergePreview = {
+    newEmployees: employees.added,
+    updatedEmployees: employees.updated,
+    newEntries,
+    updatedEntries,
+    newAdjustments: adjustments.added + adjustments.updated,
+    newClosedPeriods,
+    skippedClosedPeriods,
+    newTransactions: transactions.added,
+    newCounterparties: counterparties.added,
+    newBudgets: budgets.added,
+    newLoans: loans.added,
+    newGoals: goals.added,
+  }
+
+  return { data, preview }
+}
+
 export function getPeriodDates(period: PayPeriod): PeriodDates {
   const year = period.year
   const month = period.month

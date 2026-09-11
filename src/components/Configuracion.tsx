@@ -6,6 +6,7 @@ import {
   exportJSON,
   getPeriodDates,
   importJSON,
+  mergeAppData,
   periodKey,
   profileLabel,
 } from "../store"
@@ -20,6 +21,7 @@ import {
   ConfirmDialog,
   Field,
   IconButton,
+  Modal,
   SectionTitle,
   Segmented,
   Toggle,
@@ -390,7 +392,7 @@ export default function Configuracion({
           />
           <DataRow
             title="Importar respaldo"
-            desc="Reemplaza todos los datos actuales por los del archivo"
+            desc="Fusiona el archivo con los datos actuales, o reemplázalos por completo"
             action={
               <label className="inline-flex items-center gap-2 px-3.5 py-2 bg-brand text-brand-fg rounded-xl text-sm font-semibold hover:bg-brand-hover cursor-pointer">
                 <Icon name="upload" />
@@ -515,10 +517,62 @@ export default function Configuracion({
       )}
 
       {pending === "import" && importedData && (
-        <ConfirmDialog
+        <Modal
           title="Importar respaldo"
-          message={
+          onClose={() => {
+            setImportedData(null)
+            setPending(null)
+          }}
+          width="max-w-sm"
+          footer={
             <>
+              <Button
+                onClick={() => {
+                  setImportedData(null)
+                  setPending(null)
+                }}
+                className="flex-1"
+              >
+                Cancelar
+              </Button>
+              <Button
+                variant="danger"
+                className="flex-1"
+                onClick={() => {
+                  onChange(importedData)
+                  onNotify("Datos reemplazados")
+                  setImportedData(null)
+                  setPending(null)
+                }}
+              >
+                Reemplazar todo
+              </Button>
+              <Button
+                variant="primary"
+                className="flex-1"
+                onClick={() => {
+                  const { data: merged, preview } = mergeAppData(
+                    data,
+                    importedData,
+                  )
+                  onChange(merged)
+                  onNotify(
+                    `Fusionado: ${preview.newEmployees} colaboradores nuevos, ${preview.newEntries} registros nuevos` +
+                      (preview.updatedEntries > 0
+                        ? `, ${preview.updatedEntries} registros actualizados`
+                        : ""),
+                  )
+                  setImportedData(null)
+                  setPending(null)
+                }}
+              >
+                Fusionar
+              </Button>
+            </>
+          }
+        >
+          <div className="text-sm text-muted leading-relaxed space-y-3">
+            <p>
               El archivo contiene{" "}
               <strong className="text-fg">
                 {importedData.employees.length} colaboradores
@@ -527,23 +581,22 @@ export default function Configuracion({
               <strong className="text-fg">
                 {importedData.timeEntries.length} registros
               </strong>
-              . Reemplazará por completo los datos actuales (
-              {data.employees.length} colaboradores, {data.timeEntries.length}{" "}
-              registros). Exporta un respaldo antes si no estás seguro.
-            </>
-          }
-          confirmLabel="Reemplazar datos"
-          onConfirm={() => {
-            onChange(importedData)
-            onNotify("Datos importados")
-            setImportedData(null)
-            setPending(null)
-          }}
-          onCancel={() => {
-            setImportedData(null)
-            setPending(null)
-          }}
-        />
+              . Los datos actuales tienen {data.employees.length}{" "}
+              colaboradores y {data.timeEntries.length} registros.
+            </p>
+            <p>
+              <strong className="text-fg">Fusionar</strong> agrega lo nuevo del
+              archivo sin borrar lo que no choca con él (por ejemplo, el
+              registro de otro colaborador). Solo se sobrescribe lo que
+              coincide en colaborador y fecha, o el mismo elemento por id.
+            </p>
+            <p>
+              <strong className="text-fg">Reemplazar todo</strong> descarta
+              los datos actuales y deja solo lo que trae el archivo. Exporta
+              un respaldo antes si no estás seguro.
+            </p>
+          </div>
+        </Modal>
       )}
     </div>
   )
