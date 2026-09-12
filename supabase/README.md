@@ -122,6 +122,26 @@ Una **sección nueva** (por ejemplo, "solo contabilidad") sí requiere
 programarla: el servidor tiene que saber qué parte de la empresa entrega y
 cuál acepta.
 
+## Archivos adjuntos
+
+Los comprobantes de Contabilidad y las fotos o certificados de incapacidad no
+viajan dentro de los datos de la empresa: van al almacenamiento de archivos de
+Supabase (bucket `adjuntos`, 1 GB en el plan gratuito) y en los datos solo
+queda su ubicación. Así un cambio de horas no reenvía todas las fotos.
+
+- Los adjuntos que ya existían dentro de los datos se trasladan solos la
+  primera vez que la empresa se sincroniza.
+- Sin conexión o sin nube se siguen guardando en el navegador, y se trasladan
+  cuando hay conexión.
+- También se puede pegar el enlace de un documento que viva en Drive u otro
+  lado, en vez de subir el archivo.
+- Quién ve qué: los comprobantes, cualquiera que pueda ver la empresa. Las
+  fotos de incapacidad, por ser datos médicos, solo Administrador, Editor y
+  el rango Asistencia, que es quien las registra.
+
+Los enlaces a los archivos son temporales y se piden en el momento: nadie que
+no tenga acceso a la empresa puede abrirlos, aunque le pasen la dirección.
+
 ## Cómo se comporta
 
 - Cada equipo guarda primero en su navegador y sube a la nube ~1,5 s después
