@@ -12,16 +12,18 @@ describe("secciones de la nube", () => {
     expect(sectionPayload("asistencia", data)).toEqual({ timeEntries: [entry] })
   })
 
-  it("Costos sube los pagos y las plantillas de beneficiarios, nada más", () => {
+  it("Costos sube pagos, plantillas y encargadas, nada más", () => {
     const data = {
       ...defaultData,
       employees: [emp],
       costs: [{ id: "c1" }],
       costTemplates: [{ id: "p1" }],
+      costOperators: [{ id: "o1", name: "Maria", pin: "1234" }],
     } as unknown as AppData
     expect(sectionPayload("costos", data)).toEqual({
       costs: [{ id: "c1" }],
       costTemplates: [{ id: "p1" }],
+      costOperators: [{ id: "o1", name: "Maria", pin: "1234" }],
     })
   })
 

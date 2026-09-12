@@ -295,7 +295,10 @@ returns jsonb language sql immutable as $$
       'companyName',   p_data -> 'companyName',
       'costs',         coalesce(p_data -> 'costs', '[]'),
       -- Beneficiarios frecuentes para autorrellenar "a quién se le paga".
-      'costTemplates', coalesce(p_data -> 'costTemplates', '[]'))
+      'costTemplates', coalesce(p_data -> 'costTemplates', '[]'),
+      -- Encargadas con PIN: viajan para que las mismas personas puedan
+      -- registrar pagos desde cualquier estación.
+      'costOperators', coalesce(p_data -> 'costOperators', '[]'))
   end
 $$;
 
@@ -353,9 +356,12 @@ begin
       raise exception 'Formato de costos inválido';
     end if;
     v_data := jsonb_set(v_data, '{costs}', p_payload -> 'costs', true);
-    -- Opcional: un cliente anterior a las plantillas no las manda y no se tocan.
+    -- Opcionales: un cliente anterior a ellos no los manda y no se tocan.
     if jsonb_typeof(p_payload -> 'costTemplates') = 'array' then
       v_data := jsonb_set(v_data, '{costTemplates}', p_payload -> 'costTemplates', true);
+    end if;
+    if jsonb_typeof(p_payload -> 'costOperators') = 'array' then
+      v_data := jsonb_set(v_data, '{costOperators}', p_payload -> 'costOperators', true);
     end if;
 
   else

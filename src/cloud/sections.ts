@@ -36,8 +36,8 @@ export const SECTIONS: Record<Section, SectionDef> = {
   },
   costos: {
     tab: "costos",
-    reads: ["companyName", "costs", "costTemplates"],
-    writes: ["costs", "costTemplates"],
+    reads: ["companyName", "costs", "costTemplates", "costOperators"],
+    writes: ["costs", "costTemplates", "costOperators"],
   },
 }
 
