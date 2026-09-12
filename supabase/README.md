@@ -78,7 +78,22 @@ VITE_SUPABASE_ANON_KEY=eyJ...
 | Editor | Ve y modifica todos los datos |
 | Solo lectura | Ve todo, no modifica nada |
 | Asistencia | Solo el Registro Diario: anota horas, feriados, vacaciones, incapacidades. Recibe los colaboradores **sin** tarifas, salarios ni cédula y no ve montos. No puede tocar días de quincenas cerradas |
-| Costos | Solo la lista de costos: registra y edita pagos. La nube nunca le envía salarios, registro diario ni el resto de la empresa. *(Se habilita en la app cuando esté el módulo de Costos.)* |
+| Costos | Solo la lista de costos: registra y edita pagos, con sus beneficiarios frecuentes y las encargadas de turno. La nube nunca le envía salarios, registro diario ni el resto de la empresa. *(Se habilita en la app cuando esté el módulo de Costos.)* |
+
+### Costos: la cuenta de nube y el PIN de turno
+
+En Costos hay dos identidades y no son lo mismo:
+
+- **La cuenta de nube** (por ejemplo `caja`) identifica la **computadora**:
+  dice qué estación puede sincronizar los pagos. Es la que aparece en «último
+  guardado de…».
+- **El PIN de turno** identifica a la **persona**: cada encargada entra con su
+  nombre y su PIN, y eso es lo que queda en cada pago como quién lo procesó.
+
+Varias encargadas comparten la misma cuenta de nube en una estación. Sus
+perfiles y PIN sí se sincronizan, así que las mismas personas pueden trabajar
+en cualquier computadora. El PIN se guarda cifrado: ni la nube ni el navegador
+conservan el número.
 
 Para cambiar el rango de alguien, elige el nuevo en la lista junto a su nombre.
 
