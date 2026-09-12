@@ -26,6 +26,8 @@ import {
 } from "../utils/dates"
 import { scheduleForDate } from "../utils/schedule"
 import Icon from "./Icon"
+import { AttachmentList, AttachmentPicker } from "./Adjuntos"
+import { removeAttachment } from "../cloud/attachments"
 import LlenadoRapido, { applyFill, resolveFillTargets } from "./LlenadoRapido"
 import type { FillOptions } from "./LlenadoRapido"
 import {
@@ -41,6 +43,12 @@ import {
   inputNumClass,
 } from "./ui"
 import type { Tone } from "./ui"
+
+/**
+ * Un día no necesita un álbum: con el certificado y alguna foto extra basta,
+ * y el tope evita que un registro engorde sin control.
+ */
+const MAX_ATTACHMENTS_PER_ENTRY = 3
 
 interface RowTotals {
   days: number
@@ -120,6 +128,7 @@ function blankEntry(
     // salvo que se elija otro multiplicador a mano.
     overtimeRate: template?.overtimeRate ?? 1,
     notes: "",
+    attachments: [],
   }
 }
 
@@ -397,6 +406,7 @@ export default function RegistroDiario({
           anchorRect={target.rect}
           rules={rules}
           onSave={saveEntry}
+          onNotify={onNotify}
           onDelete={() => deleteEntry(target.employeeId, target.date)}
           onClose={() => setTarget(null)}
         />
@@ -1230,6 +1240,7 @@ interface EntryEditorProps {
   onSave: (entry: TimeEntry) => void
   onDelete: () => void
   onClose: () => void
+  onNotify: (text: string, tone?: Tone) => void
 }
 
 function EntryEditor({
@@ -1242,6 +1253,7 @@ function EntryEditor({
   onSave,
   onDelete,
   onClose,
+  onNotify,
 }: EntryEditorProps) {
   const hidePay = useContext(HidePay)
   const [form, setForm] = useState<TimeEntry>(
@@ -1538,6 +1550,34 @@ function EntryEditor({
           </p>
         )}
 
+        {/* El respaldo se pide donde tiene sentido: el certificado de una
+            incapacidad y el justificante de una ausencia. */}
+        {(form.dayType === "incapacidad" || form.dayType === "ausencia") && (
+          <div className="mb-3">
+            <span className="block text-xs font-semibold text-muted mb-1.5">
+              {form.dayType === "incapacidad"
+                ? "Certificado o foto de la incapacidad"
+                : "Justificante (opcional)"}
+            </span>
+            <AttachmentList
+              items={form.attachments}
+              onRemove={(a) =>
+                set(
+                  "attachments",
+                  form.attachments.filter((x) => x.id !== a.id),
+                )
+              }
+            />
+            <AttachmentPicker
+              scope="incapacidades"
+              max={MAX_ATTACHMENTS_PER_ENTRY}
+              current={form.attachments.length}
+              onNotify={onNotify}
+              onAdd={(added) => set("attachments", [...form.attachments, ...added])}
+            />
+          </div>
+        )}
+
         <textarea
           value={form.notes}
           onChange={(e) => set("notes", e.target.value)}
@@ -1581,7 +1621,15 @@ function EntryEditor({
             size="sm"
             className="flex-1"
             disabled={!canSave}
-            onClick={() => onSave(form)}
+            onClick={() => {
+              // Los archivos que se quitaron salen del almacenamiento recién
+              // al guardar: cerrar sin guardar no debe borrar nada.
+              const kept = new Set(form.attachments.map((a) => a.id))
+              for (const a of existing?.attachments ?? []) {
+                if (!kept.has(a.id)) void removeAttachment(a)
+              }
+              onSave(form)
+            }}
           >
             Guardar
           </Button>

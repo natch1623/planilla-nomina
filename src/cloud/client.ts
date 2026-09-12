@@ -313,6 +313,30 @@ export async function listRoles(): Promise<RoleDef[]> {
   return (data ?? []).map((r: any) => ({ ...toAccess(r), description: r.description ?? "" }))
 }
 
+/* ---------------------------- Archivos ------------------------------- */
+
+const BUCKET = "adjuntos"
+
+export async function uploadFile(path: string, file: File): Promise<void> {
+  const { error } = await sb().storage.from(BUCKET).upload(path, file, {
+    contentType: file.type || "application/octet-stream",
+    upsert: false,
+  })
+  if (error) fail(error)
+}
+
+/** El bucket es privado: cada vista necesita un enlace firmado y temporal. */
+export async function signedUrl(path: string, seconds: number): Promise<string> {
+  const { data, error } = await sb().storage.from(BUCKET).createSignedUrl(path, seconds)
+  if (error) fail(error)
+  return data?.signedUrl ?? ""
+}
+
+export async function removeFile(path: string): Promise<void> {
+  const { error } = await sb().storage.from(BUCKET).remove([path])
+  if (error) fail(error)
+}
+
 /* ----------------------------- Miembros ------------------------------ */
 
 export async function listMembers(companyId: string): Promise<CompanyMember[]> {

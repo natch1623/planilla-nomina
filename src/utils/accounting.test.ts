@@ -208,6 +208,7 @@ function workday(date: string): TimeEntry {
     lunchDuration: 60,
     overtimeRate: 1.5,
     notes: "",
+    attachments: [],
   }
 }
 

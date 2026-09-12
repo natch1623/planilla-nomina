@@ -16,6 +16,7 @@ describe("attendanceRows", () => {
         lunchDuration: 60,
         overtimeRate: 1.5,
         notes: "Llegó tarde por lluvia",
+        attachments: [],
       },
     ]
 
@@ -53,6 +54,7 @@ describe("attendanceRows", () => {
         lunchDuration: 60,
         overtimeRate: 1.5,
         notes: "",
+        attachments: [],
       },
     ]
 
@@ -82,6 +84,7 @@ describe("attendanceRows", () => {
         lunchDuration: 60,
         overtimeRate: 1.5,
         notes: "",
+        attachments: [],
       },
     ]
 

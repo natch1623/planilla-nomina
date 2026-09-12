@@ -51,6 +51,7 @@ function summaryFor(id: string, name: string): EmployeeSummary {
         lunchDuration: 60,
         overtimeRate: 1.5,
         notes: "",
+        attachments: [],
       },
     ],
     RULES,
@@ -140,6 +141,7 @@ describe("buildPayrollWorkbook", () => {
         lunchDuration: 60,
         overtimeRate: 1.5,
         notes: "Turno completo",
+        attachments: [],
       },
     ]
     const wb = buildPayrollWorkbook(SUMMARIES, PERIOD, entries)

@@ -45,6 +45,7 @@ function fullEntries(start: string, end: string): TimeEntry[] {
     lunchDuration: 60,
     overtimeRate: 1.5,
     notes: i === 4 ? "Cierre de mes" : "",
+    attachments: [],
   }))
 }
 

@@ -3,6 +3,7 @@ import type { AppData } from "../types"
 import { DATA_VERSION, defaultData, normalizeData } from "../store"
 import * as api from "./client"
 import type { CloudCompany, CloudSnapshot, RoleAccess } from "./client"
+import { countInlineAttachments, migrateAttachments, setAttachmentCompany } from "./attachments"
 import { applySection, sectionPayload } from "./sections"
 import type { Section } from "./sections"
 import {
@@ -322,15 +323,56 @@ export function useCloud({
   }, [data, dirty, signedIn, conflict, push])
 
   // Al abrir una empresa vinculada: ponerse al día y escuchar a los demás.
+  /**
+   * Traslada al almacenamiento los adjuntos que todavía viajan dentro del
+   * JSON. Se hace una vez por empresa vinculada: a partir de ahí cada
+   * guardado deja de arrastrar las fotos.
+   */
+  const migrating = useRef(false)
+  const moveInlineAttachments = useCallback(async () => {
+    const profileId = activeRef.current
+    const current = linksRef.current[profileId]
+    const a = accessRef.current
+    if (!current || !a || !api.canWrite(a) || !a.writesAll) return
+    if (migrating.current) return
+    if (countInlineAttachments(dataRef.current) === 0) return
+
+    migrating.current = true
+    try {
+      const res = await migrateAttachments(dataRef.current, current.companyId)
+      if (res.moved > 0 && activeRef.current === profileId) {
+        // Cambian los datos, así que el guardado normal sube las rutas.
+        setData(res.data)
+        notify(
+          `${res.moved} ${res.moved === 1 ? "adjunto trasladado" : "adjuntos trasladados"} al almacenamiento de la nube`,
+        )
+      }
+      if (res.failed > 0) {
+        notify(`Quedaron ${res.failed} adjuntos sin trasladar; se reintenta luego`, "amber")
+      }
+    } catch (err) {
+      console.error("Falló el traslado de adjuntos", err)
+    } finally {
+      migrating.current = false
+    }
+  }, [notify, setData])
+
   const companyId = link?.companyId ?? null
   // Hasta conocer el rango no se puede consultar: la empresa completa y las
   // secciones van por caminos distintos.
   const accessKnown = access !== null
+  // Los adjuntos nuevos van al almacenamiento de la empresa sincronizada.
+  useEffect(() => {
+    setAttachmentCompany(signedIn ? companyId : null)
+    return () => setAttachmentCompany(null)
+  }, [companyId, signedIn])
+
   useEffect(() => {
     if (!companyId || !signedIn || !accessKnown) return
     outdated.current = false
     setPhase("idle")
     void checkRemote()
+    void moveInlineAttachments()
     const off = api.subscribeCompany(companyId, (rev) => void checkRemote(rev))
     const onFocus = () => {
       if (document.visibilityState === "visible") void checkRemote()
@@ -347,7 +389,7 @@ export function useCloud({
       document.removeEventListener("visibilitychange", onFocus)
       window.removeEventListener("online", onOnline)
     }
-  }, [companyId, signedIn, accessKnown, checkRemote, push])
+  }, [companyId, signedIn, accessKnown, checkRemote, push, moveInlineAttachments])
 
   /* ------------------------------ Acciones ----------------------------- */
 
@@ -378,8 +420,10 @@ export function useCloud({
     const d = dataRef.current
     const created = await api.createCompany(d.companyName, d)
     setLinks((prev) => ({ ...prev, [profileId]: { companyId: created.id, revision: created.revision, dirty: false } }))
+    setAttachmentCompany(created.id)
     await refreshCompanies()
-  }, [refreshCompanies, setLinks])
+    await moveInlineAttachments()
+  }, [moveInlineAttachments, refreshCompanies, setLinks])
 
   /** Abre una empresa de la nube: la baja si este equipo no la tiene. */
   const openCompany = useCallback(

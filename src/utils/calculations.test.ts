@@ -57,6 +57,7 @@ function entry(overrides: Partial<TimeEntry> = {}): TimeEntry {
     lunchDuration: 60,
     overtimeRate: 1.5,
     notes: "",
+    attachments: [],
     ...overrides,
   }
 }

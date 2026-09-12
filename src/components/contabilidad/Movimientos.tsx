@@ -7,7 +7,7 @@ import type {
   TransactionStatus,
   TransactionType,
 } from "../../types"
-import { MAX_ATTACHMENTS_PER_TX, MAX_ATTACHMENT_BYTES } from "../../store"
+import { MAX_ATTACHMENTS_PER_TX } from "../../store"
 import { fmt } from "../../utils/calculations"
 import {
   PAYMENT_METHOD_LABEL,
@@ -16,6 +16,8 @@ import {
 } from "../../utils/accounting"
 import { formatDate, todayISO } from "../../utils/dates"
 import Icon from "../Icon"
+import { AttachmentList, AttachmentPicker } from "../Adjuntos"
+import { removeAttachment } from "../../cloud/attachments"
 import {
   Badge,
   Button,
@@ -106,6 +108,13 @@ export default function Movimientos({ data, onChange, onNotify }: ViewProps) {
   function handleSave() {
     if (form.amount <= 0 || !form.date) return
     if (editing) {
+      // Los archivos quitados se borran del almacenamiento recién ahora: si
+      // se hiciera al quitar la fila, cancelar el diálogo dejaría el
+      // movimiento apuntando a un archivo que ya no existe.
+      const kept = new Set(form.attachments.map((a) => a.id))
+      for (const a of editing.attachments) {
+        if (!kept.has(a.id)) void removeAttachment(a)
+      }
       onChange({
         transactions: transactions.map((t) =>
           t.id === editing.id ? { ...t, ...form } : t,
@@ -434,7 +443,6 @@ function MovimientoForm({
   onNotify: ViewProps["onNotify"]
 }) {
   const [tagInput, setTagInput] = useState("")
-  const fileRef = useRef<HTMLInputElement>(null)
   const canSave = form.amount > 0 && !!form.date
 
   function setType(type: TransactionType) {
@@ -446,41 +454,6 @@ function MovimientoForm({
     if (!tag || form.tags.includes(tag) || form.tags.length >= 12) return
     setForm((f) => ({ ...f, tags: [...f.tags, tag] }))
     setTagInput("")
-  }
-
-  async function handleFiles(files: FileList | null) {
-    if (!files || files.length === 0) return
-    const room = MAX_ATTACHMENTS_PER_TX - form.attachments.length
-    if (room <= 0) {
-      onNotify(
-        `Máximo ${MAX_ATTACHMENTS_PER_TX} adjuntos por movimiento`,
-        "amber",
-      )
-      return
-    }
-
-    const accepted: Attachment[] = []
-    for (const file of [...files].slice(0, room)) {
-      if (file.size > MAX_ATTACHMENT_BYTES) {
-        onNotify(
-          `«${file.name}» pesa demasiado (máximo ${Math.round(MAX_ATTACHMENT_BYTES / 1024)} KB)`,
-          "amber",
-        )
-        continue
-      }
-      const dataUrl = await readAsDataUrl(file)
-      accepted.push({
-        id: crypto.randomUUID(),
-        name: file.name,
-        mime: file.type,
-        size: file.size,
-        dataUrl,
-      })
-    }
-    if (accepted.length > 0) {
-      setForm((f) => ({ ...f, attachments: [...f.attachments, ...accepted] }))
-    }
-    if (fileRef.current) fileRef.current.value = ""
   }
 
   const relevantContacts = counterparties.filter((c) =>
@@ -729,51 +702,24 @@ function MovimientoForm({
           </datalist>
         </Field>
 
-        <Field
-          label="Comprobantes"
-          hint={`Hasta ${MAX_ATTACHMENTS_PER_TX} archivos de ${Math.round(MAX_ATTACHMENT_BYTES / 1024)} KB. Se guardan en este navegador.`}
-        >
-          <div className="space-y-1.5 mb-2">
-            {form.attachments.map((a) => (
-              <div
-                key={a.id}
-                className="flex items-center gap-2 rounded-xl border border-line px-3 py-2"
-              >
-                <Icon
-                  name="paperclip"
-                  className="w-4 h-4 shrink-0 text-muted"
-                />
-                <a
-                  href={a.dataUrl}
-                  download={a.name}
-                  className="text-xs text-brand truncate flex-1 hover:underline"
-                >
-                  {a.name}
-                </a>
-                <span className="text-[11px] text-subtle shrink-0">
-                  {Math.max(1, Math.round(a.size / 1024))} KB
-                </span>
-                <IconButton
-                  icon="trash"
-                  tone="danger"
-                  label={`Quitar ${a.name}`}
-                  onClick={() =>
-                    setForm((f) => ({
-                      ...f,
-                      attachments: f.attachments.filter((x) => x.id !== a.id),
-                    }))
-                  }
-                />
-              </div>
-            ))}
-          </div>
-          <input
-            ref={fileRef}
-            type="file"
-            multiple
-            accept="image/*,application/pdf"
-            onChange={(e) => handleFiles(e.target.files)}
-            className="block w-full text-xs text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-raised file:text-fg file:font-semibold file:cursor-pointer"
+        <Field label="Comprobantes">
+          <AttachmentList
+            items={form.attachments}
+            onRemove={(a) =>
+              setForm((f) => ({
+                ...f,
+                attachments: f.attachments.filter((x) => x.id !== a.id),
+              }))
+            }
+          />
+          <AttachmentPicker
+            scope="movimientos"
+            max={MAX_ATTACHMENTS_PER_TX}
+            current={form.attachments.length}
+            onNotify={onNotify}
+            onAdd={(added) =>
+              setForm((f) => ({ ...f, attachments: [...f.attachments, ...added] }))
+            }
           />
         </Field>
       </div>
@@ -781,11 +727,3 @@ function MovimientoForm({
   )
 }
 
-function readAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(new Error("No se pudo leer el archivo"))
-    reader.readAsDataURL(file)
-  })
-}

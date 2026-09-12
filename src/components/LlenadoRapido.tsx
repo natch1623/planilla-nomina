@@ -147,6 +147,8 @@ export function applyFill(
       lunchDuration: target.lunchDuration,
       overtimeRate: opts.overtimeRate,
       notes: existing?.notes ?? "",
+      // El llenado rápido no toca los respaldos ya adjuntos al día.
+      attachments: existing?.attachments ?? [],
     })
     if (existing) updated += 1
     else created += 1

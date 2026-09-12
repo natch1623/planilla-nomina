@@ -24,7 +24,7 @@ import type {
 } from "./types"
 
 const STORAGE_KEY = "planilla_data"
-export const DATA_VERSION = 10
+export const DATA_VERSION = 11
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const TIME_RE = /^\d{2}:\d{2}$/
@@ -185,6 +185,7 @@ function normalizeEntry(raw: any, employeeIds: Set<string>): TimeEntry | null {
     lunchDuration: Math.min(600, Math.max(0, num(raw.lunchDuration, 60))),
     overtimeRate: Math.max(1, num(raw.overtimeRate, 1.5)),
     notes: str(raw.notes),
+    attachments: normalizeAttachments(raw.attachments),
   }
 }
 
@@ -216,14 +217,27 @@ export const MAX_ATTACHMENTS_PER_TX = 4
 function normalizeAttachment(raw: any): Attachment | null {
   if (!raw || typeof raw !== "object") return null
   const dataUrl = str(raw.dataUrl)
-  if (!dataUrl.startsWith("data:")) return null
+  const path = str(raw.path)
+  const url = str(raw.url)
+  // Un adjunto que no dice dónde está el archivo no sirve para nada.
+  if (!dataUrl.startsWith("data:") && !path && !/^https?:\/\//i.test(url)) {
+    return null
+  }
   return {
     id: str(raw.id) || crypto.randomUUID(),
     name: str(raw.name) || "adjunto",
     mime: str(raw.mime),
     size: Math.max(0, num(raw.size, 0)),
-    dataUrl,
+    dataUrl: dataUrl.startsWith("data:") ? dataUrl : "",
+    path,
+    url: /^https?:\/\//i.test(url) ? url : "",
   }
+}
+
+function normalizeAttachments(raw: any): Attachment[] {
+  return Array.isArray(raw)
+    ? raw.map(normalizeAttachment).filter((a: Attachment | null): a is Attachment => a !== null)
+    : []
 }
 
 function normalizeTransaction(raw: any): Transaction | null {

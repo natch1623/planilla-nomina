@@ -56,6 +56,11 @@ export interface TimeEntry {
   lunchDuration: number // in minutes, default 60
   overtimeRate: number // multiplier, e.g. 1.5 means 50% extra. 1.0 = normal pay
   notes: string
+  /**
+   * Respaldo del día: sobre todo la foto o el certificado de una incapacidad.
+   * Vacío en la enorme mayoría de los registros.
+   */
+  attachments: Attachment[]
 }
 
 export interface PayPeriod {
@@ -130,13 +135,25 @@ export type PaymentMethod = "efectivo" | "transferencia" | "tarjeta" | "cheque" 
 /** Cada cuánto se repite un movimiento. `ninguna` = movimiento único. */
 export type Recurrence = "ninguna" | "semanal" | "quincenal" | "mensual" | "anual"
 
-/** Comprobante adjunto, guardado en el propio navegador como data URL. */
+/**
+ * Archivo adjunto: comprobante de un movimiento o foto de una incapacidad.
+ *
+ * Puede vivir en tres sitios, y siempre exactamente en uno:
+ * - `path`: en el almacenamiento de la nube. Es lo normal cuando la empresa
+ *   está sincronizada; el archivo no viaja dentro de los datos.
+ * - `url`: en otro lado (Drive, correo), y aquí solo queda la dirección.
+ * - `dataUrl`: dentro de este navegador. Es lo que hacía la versión sin nube
+ *   y lo que se sigue usando sin conexión; al subir la empresa se trasladan
+ *   al almacenamiento.
+ */
 export interface Attachment {
   id: string
   name: string
   mime: string
   size: number // bytes del archivo original
   dataUrl: string
+  path?: string
+  url?: string
 }
 
 /** Movimiento contable manual: gasto o ingreso fuera de la nómina. */

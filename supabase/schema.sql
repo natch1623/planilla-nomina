@@ -380,6 +380,83 @@ drop function if exists public.save_company_costs(uuid, jsonb, bigint);
 
 
 -- ---------------------------------------------------------------------
+-- Archivos adjuntos (comprobantes y fotos de incapacidad)
+--
+-- No viajan dentro del JSON de la empresa: cada guardado reenviaría todas
+-- las fotos. Viven en el bucket `adjuntos`, privado, con las rutas
+--   <id de la empresa>/movimientos/<archivo>
+--   <id de la empresa>/incapacidades/<archivo>
+-- y se leen con enlaces firmados de corta duración.
+-- ---------------------------------------------------------------------
+insert into storage.buckets (id, name, public)
+values ('adjuntos', 'adjuntos', false)
+on conflict (id) do nothing;
+
+-- Empresa y carpeta a partir de la ruta del archivo.
+create or replace function public.storage_company(p_name text)
+returns uuid language plpgsql immutable as $$
+begin
+  return (storage.foldername(p_name))[1]::uuid;
+exception when others then
+  return null; -- ruta que no empieza por un id de empresa: sin acceso
+end $$;
+
+create or replace function public.storage_scope(p_name text)
+returns text language sql immutable as $$
+  select coalesce((storage.foldername(p_name))[2], '')
+$$;
+
+/*
+ * Quién puede ver cada cosa:
+ *   movimientos    → cualquiera que pueda leer la empresa (incluye Solo lectura)
+ *   incapacidades  → son datos médicos: solo quien edita la empresa
+ *                    (Administrador, Editor) y el rango Asistencia, que es
+ *                    quien registra la incapacidad y sube la foto.
+ * Para subir o borrar hace falta poder editar, en ambos casos.
+ */
+create or replace function public.can_read_attachment(p_name text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select case public.storage_scope(p_name)
+    when 'movimientos'   then public.can_read_all(public.storage_company(p_name))
+    when 'incapacidades' then public.can_write_all(public.storage_company(p_name))
+                           or public.has_section(public.storage_company(p_name), 'asistencia')
+    else false
+  end
+$$;
+
+create or replace function public.can_write_attachment(p_name text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select case public.storage_scope(p_name)
+    when 'movimientos'   then public.can_write_all(public.storage_company(p_name))
+    when 'incapacidades' then public.can_write_all(public.storage_company(p_name))
+                           or public.has_section(public.storage_company(p_name), 'asistencia')
+    else false
+  end
+$$;
+
+drop policy if exists adjuntos_select on storage.objects;
+create policy adjuntos_select on storage.objects
+  for select to authenticated
+  using (bucket_id = 'adjuntos' and public.can_read_attachment(name));
+
+drop policy if exists adjuntos_insert on storage.objects;
+create policy adjuntos_insert on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'adjuntos' and public.can_write_attachment(name));
+
+drop policy if exists adjuntos_update on storage.objects;
+create policy adjuntos_update on storage.objects
+  for update to authenticated
+  using (bucket_id = 'adjuntos' and public.can_write_attachment(name))
+  with check (bucket_id = 'adjuntos' and public.can_write_attachment(name));
+
+drop policy if exists adjuntos_delete on storage.objects;
+create policy adjuntos_delete on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'adjuntos' and public.can_write_attachment(name));
+
+
+-- ---------------------------------------------------------------------
 -- Personas. El usuario debe existir ya en Authentication → Users.
 -- ---------------------------------------------------------------------
 create or replace function public.add_company_member(p_company uuid, p_email text, p_role text default 'editor')
