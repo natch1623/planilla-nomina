@@ -26,9 +26,9 @@ Las cuentas las creas tú; nadie debe poder registrarse solo.
 1. **Authentication → Sign In / Providers**. En **Email**, deja activo
    *Enable Email provider* y **desactiva** *Allow new users to sign up*.
 2. **Authentication → Users → Add user → Create new user**, una por persona.
-   - **Email**: `usuario@planilla.local` — por ejemplo `douglas@planilla.local`,
+   - **Email**: `usuario@planilla.local` — por ejemplo `willy.coyote@planilla.local`,
      en minúsculas, sin tildes ni espacios. En la app la persona escribe solo
-     `douglas`; ese correo no existe ni recibe nada.
+     `willy.coyote`; ese correo no existe ni recibe nada.
    - **Password**: una temporal de al menos 8 caracteres.
    - Marca *Auto Confirm User*.
 
@@ -78,7 +78,7 @@ VITE_SUPABASE_ANON_KEY=eyJ...
 | Editor | Ve y modifica todos los datos |
 | Solo lectura | Ve todo, no modifica nada |
 | Asistencia | Solo el Registro Diario: anota horas, feriados, vacaciones, incapacidades. Recibe los colaboradores **sin** tarifas, salarios ni cédula y no ve montos. No puede tocar días de quincenas cerradas |
-| Costos | Solo la lista de costos: registra y edita pagos, con sus beneficiarios frecuentes y las encargadas de turno. La nube nunca le envía salarios, registro diario ni el resto de la empresa. *(Se habilita en la app cuando esté el módulo de Costos.)* |
+| Costos | Solo la lista de costos: registra y edita pagos, con sus beneficiarios frecuentes y las encargadas de turno. La nube nunca le envía salarios, registro diario ni el resto de la empresa. |
 
 ### Costos: la cuenta de nube y el PIN de turno
 
@@ -155,8 +155,6 @@ no tenga acceso a la empresa puede abrirlos, aunque le pasen la dirección.
 
 ## Límites a tener en cuenta
 
-- Los comprobantes adjuntos viajan dentro del JSON de la empresa. Muchos
-  adjuntos grandes hacen más lenta cada subida; el plan gratuito da 500 MB de
-  base de datos.
+- El plan gratuito da 500 MB de base de datos y 1 GB de archivos adjuntos.
 - Supabase pausa los proyectos gratuitos tras una semana sin actividad; se
   reactivan desde el panel.

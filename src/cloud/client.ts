@@ -70,7 +70,7 @@ export function canWrite(access: RoleAccess | null): boolean {
 /**
  * Las cuentas se crean en Supabase como `usuario@planilla.local`: Auth exige
  * un correo, pero nadie tiene que escribirlo ni recibirlo. Quien entra escribe
- * solo "douglas"; un correo completo también se acepta tal cual.
+ * solo "willy.coyote"; un correo completo también se acepta tal cual.
  */
 export const USERNAME_DOMAIN = "planilla.local"
 

@@ -816,7 +816,7 @@ export default function App() {
                     setCreatingProfile(false)
                   }
                 }}
-                placeholder="Ej. Servicios RyS, S.A."
+                placeholder="Ej. ACME, S.A."
                 className={inputClass}
               />
             </Field>

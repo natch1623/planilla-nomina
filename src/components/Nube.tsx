@@ -252,7 +252,7 @@ function LoginModal({
             autoComplete="username"
             autoCapitalize="none"
             spellCheck={false}
-            placeholder="p. ej. douglas"
+            placeholder="p. ej. willy.coyote"
             autoFocus
             value={email}
             onChange={(e) => setEmail(e.target.value)}

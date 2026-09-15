@@ -203,7 +203,7 @@ export default function Configuracion({
             <input
               value={data.companyName}
               onChange={(e) => set("companyName", e.target.value)}
-              placeholder="Ej. Servicios RyS, S.A."
+              placeholder="Ej. ACME, S.A."
               className={inputClass}
             />
           </Field>

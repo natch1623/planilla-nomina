@@ -277,7 +277,7 @@ function Members({
             type="text"
             autoCapitalize="none"
             spellCheck={false}
-            placeholder="usuario, p. ej. kathy"
+            placeholder="usuario, p. ej. willy.coyote"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             className={`${inputClass} flex-1`}
