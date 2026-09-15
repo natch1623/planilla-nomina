@@ -10,6 +10,7 @@ import {
   monthLabel,
 } from "../utils/accounting"
 import { groupTransactions } from "../utils/finance"
+import { costsMonthTotal } from "../utils/costs"
 import Icon from "./Icon"
 import { Card, CardHeader, Segmented } from "./ui"
 
@@ -52,13 +53,20 @@ export default function EstadoResultados({ data, rules }: Props) {
     ? current.gastosManual
     : current.gastosManualPagados
   const nomina = current.gastosNomina
-  const utilidad = ingresos - gastosOperativos - nomina
+  // Los pagos a terceros (módulo Costos) no tienen estado pendiente/pagado
+  // como los movimientos manuales: cada renglón ya es dinero entregado, así
+  // que cuentan igual en devengado y en caja.
+  const costosTerceros = costsMonthTotal(data.costs, key)
+  const utilidad = ingresos - gastosOperativos - nomina - costosTerceros
   const margen = pct(utilidad, ingresos)
 
+  const prevKey = addMonths(key, -1)
+  const costosTercerosPrev = costsMonthTotal(data.costs, prevKey)
   const ingresosPrev = accrued ? previous.ingresos : previous.ingresosCobrados
   const gastosPrev =
     (accrued ? previous.gastosManual : previous.gastosManualPagados) +
-    previous.gastosNomina
+    previous.gastosNomina +
+    costosTercerosPrev
   const utilidadPrev = ingresosPrev - gastosPrev
 
   // El desglose por categoría solo tiene sentido sobre los movimientos que la
@@ -86,7 +94,11 @@ export default function EstadoResultados({ data, rules }: Props) {
     [visible],
   )
 
-  const sinDatos = ingresos === 0 && gastosOperativos === 0 && nomina === 0
+  const sinDatos =
+    ingresos === 0 &&
+    gastosOperativos === 0 &&
+    nomina === 0 &&
+    costosTerceros === 0
 
   return (
     <Card>
@@ -148,6 +160,16 @@ export default function EstadoResultados({ data, rules }: Props) {
               tone="danger"
               polarity="costo"
             />
+            {costosTerceros > 0 || costosTercerosPrev > 0 ? (
+              <Line
+                label="Costos a terceros"
+                hint="Pagos a empresas y personas registrados en Costos"
+                amount={-costosTerceros}
+                previous={-costosTercerosPrev}
+                tone="danger"
+                polarity="costo"
+              />
+            ) : null}
             <Line
               label="Utilidad neta"
               hint={
@@ -176,14 +198,24 @@ export default function EstadoResultados({ data, rules }: Props) {
                 rows={gastoCats}
                 total={gastosOperativos}
                 tone="danger"
-                extra={
-                  nomina > 0
-                    ? { label: "Nómina", amount: nomina }
-                    : undefined
-                }
-                extraTotal={gastosOperativos + nomina}
+                extra={[
+                  ...(nomina > 0 ? [{ label: "Nómina", amount: nomina }] : []),
+                  ...(costosTerceros > 0
+                    ? [{ label: "Costos a terceros", amount: costosTerceros }]
+                    : []),
+                ]}
+                extraTotal={gastosOperativos + nomina + costosTerceros}
               />
             </div>
+          )}
+
+          {costosTerceros > 0 && (
+            <p className="flex items-start gap-1.5 text-[11px] text-subtle mt-4 pt-4 border-t border-line">
+              <Icon name="alert" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              Los pagos a terceros se registran una sola vez, en Costos: evita
+              anotarlos también como gasto en Movimientos para no contarlos
+              dos veces.
+            </p>
           )}
         </>
       )}
@@ -269,11 +301,14 @@ function Breakdown({
   rows: { key: string; label: string; amount: number }[]
   total: number
   tone: "ok" | "danger"
-  extra?: { label: string; amount: number }
+  extra?: { label: string; amount: number }[]
   extraTotal?: number
 }) {
   const base = extraTotal ?? total
-  const all = extra ? [{ key: "__nomina", ...extra }, ...rows] : rows
+  const all = [
+    ...(extra ?? []).map((e) => ({ key: `__extra-${e.label}`, ...e })),
+    ...rows,
+  ]
   if (all.length === 0) return null
 
   return (

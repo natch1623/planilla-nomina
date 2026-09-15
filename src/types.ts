@@ -102,6 +102,9 @@ export interface AppData {
   budgets: Budget[]
   loans: Loan[]
   goals: FinancialGoal[]
+  costs: CostEntry[]
+  costTemplates: CostTemplate[]
+  costOperators: CostOperator[]
   /** Dinero en caja/banco al inicio, antes del primer movimiento registrado. */
   openingBalance: number
   openingBalanceDate: string // YYYY-MM-DD ('' = sin fecha declarada)
@@ -213,6 +216,52 @@ export interface FinancialGoal {
   target: number
   deadline: string // YYYY-MM
   createdAt: string // YYYY-MM-DD
+}
+
+export type CostRecipientKind = "empresa" | "persona"
+
+/**
+ * Pago a una empresa o persona fuera de la planilla: proveedores puntuales,
+ * consultores, trámites, etc. Vive aparte de `Transaction` porque nace de un
+ * registro más simple (un renglón por pago, sin estado pendiente/pagado ni
+ * recurrencia) y necesita quién lo procesó, algo que un movimiento contable
+ * no registra.
+ */
+export interface CostEntry {
+  id: string
+  date: string // YYYY-MM-DD
+  recipientName: string // a quién se le pagó
+  recipientKind: CostRecipientKind
+  taxId: string // RUC / cédula
+  concept: string // de qué es el pago
+  quantity: number // unidades o cantidad del bien/servicio
+  amount: number // monto pagado en USD
+  comment: string
+  processedBy: string // encargada/o que procesó el pago
+}
+
+/**
+ * Perfil guardado de un beneficiario recurrente (empresa o persona a la que
+ * se le paga seguido), para no volver a teclear su nombre y RUC en cada pago.
+ */
+export interface CostTemplate {
+  id: string
+  recipientName: string
+  recipientKind: CostRecipientKind
+  taxId: string
+}
+
+/**
+ * Perfil de quien registra pagos, con un PIN corto para dar cuenta de que
+ * quien capturó un pago es quien dice ser. No es una cuenta con permisos —
+ * solo evita que un pago quede atribuido a la persona equivocada por
+ * descuido durante un cambio de turno.
+ */
+export interface CostOperator {
+  id: string
+  name: string
+  /** Huella SHA-256 del PIN de 4 dígitos (ver hashPin en utils/costs.ts) — nunca el PIN en claro. */
+  pin: string
 }
 
 /** Conteo de días por tipo dentro del período. */
