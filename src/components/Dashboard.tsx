@@ -24,6 +24,8 @@ import {
   initials,
   pct,
 } from "../utils/calculations"
+import { currentMonthKey, monthKey, monthLabel } from "../utils/accounting"
+import { costsMonthTotal } from "../utils/costs"
 import { AnimatedNumber, Sparkline } from "./Metricas"
 import TendenciaMensual from "./TendenciaMensual"
 import EstadoResultados from "./EstadoResultados"
@@ -284,6 +286,14 @@ export default function Dashboard({
     </>
   ) : null
 
+  // Sin Contabilidad activa no hay "utilidad" que mezclar: los costos a
+  // terceros se muestran aparte, para no confundirlos con el pago de
+  // planilla que domina el resto del dashboard.
+  const costosResumen =
+    !data.accountingEnabled && data.costs.length > 0 ? (
+      <CostosResumenCard costs={data.costs} />
+    ) : null
+
   if (summaries.length === 0) {
     return (
       <div className="space-y-5">
@@ -296,6 +306,7 @@ export default function Dashboard({
           }
         />
         {estadoResultados}
+        {costosResumen}
         <EmptyState
           icon="dashboard"
           title="Sin planilla para este período"
@@ -323,6 +334,7 @@ export default function Dashboard({
       />
 
       {estadoResultados}
+      {costosResumen}
 
       {data.accountingEnabled && (
         <div className="text-[10px] font-bold text-subtle uppercase tracking-widest pt-1">
@@ -1021,6 +1033,33 @@ function CategoryCard({
       </div>
       <div className="text-[11px] text-subtle mt-1.5">
         {share.toFixed(1)}% del total a pagar
+      </div>
+    </Card>
+  )
+}
+
+/**
+ * Aparece solo con Contabilidad apagada, y separado del bloque de planilla:
+ * el pago a colaboradores no debe leerse mezclado con los pagos a terceros.
+ */
+function CostosResumenCard({ costs }: { costs: AppData["costs"] }) {
+  const key = currentMonthKey()
+  const total = costsMonthTotal(costs, key)
+  const count = costs.filter((c) => monthKey(c.date) === key).length
+
+  return (
+    <Card>
+      <CardHeader
+        title="Costos a terceros"
+        subtitle={`${monthLabel(key)} · pagos a empresas y personas fuera de la planilla`}
+      />
+      <div className="flex items-baseline justify-between">
+        <span className="num text-2xl font-extrabold text-danger">
+          ${fmt(total)}
+        </span>
+        <span className="text-xs text-muted">
+          {count} {count === 1 ? "pago" : "pagos"} este mes
+        </span>
       </div>
     </Card>
   )

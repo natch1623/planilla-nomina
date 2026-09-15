@@ -54,9 +54,16 @@ import {
 const Empleados = lazy(() => import("./components/Empleados"))
 const RegistroDiario = lazy(() => import("./components/RegistroDiario"))
 const Contabilidad = lazy(() => import("./components/Contabilidad"))
+const Costos = lazy(() => import("./components/Costos"))
 const Configuracion = lazy(() => import("./components/Configuracion"))
 
-type Tab = "dashboard" | "empleados" | "registro" | "contabilidad" | "config"
+type Tab =
+  | "dashboard"
+  | "empleados"
+  | "registro"
+  | "contabilidad"
+  | "costos"
+  | "config"
 
 interface TabDef {
   id: Tab
@@ -80,6 +87,7 @@ const TABS: TabDef[] = [
     short: "Cuentas",
     icon: "receipt",
   },
+  { id: "costos", label: "Costos", short: "Costos", icon: "building" },
   { id: "config", label: "Configuración", short: "Ajustes", icon: "settings" },
 ]
 
@@ -735,6 +743,13 @@ export default function App() {
             <Contabilidad
               data={data}
               rules={rules}
+              onChange={(patch) => setData((d) => ({ ...d, ...patch }))}
+              onNotify={push}
+            />
+          )}
+          {activeTab === "costos" && (
+            <Costos
+              data={data}
               onChange={(patch) => setData((d) => ({ ...d, ...patch }))}
               onNotify={push}
             />

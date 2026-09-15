@@ -3,6 +3,10 @@ import type {
   Attachment,
   Budget,
   ClosedPeriod,
+  CostEntry,
+  CostOperator,
+  CostRecipientKind,
+  CostTemplate,
   Counterparty,
   CounterpartyKind,
   DayType,
@@ -24,7 +28,7 @@ import type {
 } from "./types"
 
 const STORAGE_KEY = "planilla_data"
-export const DATA_VERSION = 11
+export const DATA_VERSION = 14
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const TIME_RE = /^\d{2}:\d{2}$/
@@ -55,6 +59,9 @@ export const defaultData: AppData = {
   budgets: [],
   loans: [],
   goals: [],
+  costs: [],
+  costTemplates: [],
+  costOperators: [],
   openingBalance: 0,
   openingBalanceDate: "",
   accountingEnabled: true,
@@ -397,6 +404,63 @@ function normalizeGoal(raw: any): FinancialGoal | null {
   }
 }
 
+const COST_RECIPIENT_KINDS: CostRecipientKind[] = ["empresa", "persona"]
+
+function normalizeCostEntry(raw: any): CostEntry | null {
+  if (!raw || typeof raw !== "object") return null
+  const recipientName = str(raw.recipientName).trim()
+  if (!recipientName) return null
+  const date = str(raw.date)
+  if (!DATE_RE.test(date)) return null
+  const amount = Math.max(0, num(raw.amount, 0))
+  if (amount <= 0) return null
+  return {
+    id: str(raw.id) || crypto.randomUUID(),
+    date,
+    recipientName,
+    recipientKind: COST_RECIPIENT_KINDS.includes(raw.recipientKind)
+      ? raw.recipientKind
+      : "empresa",
+    taxId: str(raw.taxId),
+    concept: str(raw.concept),
+    quantity: Math.max(0, num(raw.quantity, 1)),
+    amount,
+    comment: str(raw.comment),
+    processedBy: str(raw.processedBy),
+  }
+}
+
+function normalizeCostTemplate(raw: any): CostTemplate | null {
+  if (!raw || typeof raw !== "object") return null
+  const recipientName = str(raw.recipientName).trim()
+  if (!recipientName) return null
+  return {
+    id: str(raw.id) || crypto.randomUUID(),
+    recipientName,
+    recipientKind: COST_RECIPIENT_KINDS.includes(raw.recipientKind)
+      ? raw.recipientKind
+      : "empresa",
+    taxId: str(raw.taxId),
+  }
+}
+
+const PIN_HASH_RE = /^[0-9a-f]{64}$/
+
+function normalizeCostOperator(raw: any): CostOperator | null {
+  if (!raw || typeof raw !== "object") return null
+  const name = str(raw.name).trim()
+  if (!name) return null
+  // El PIN se guarda como huella SHA-256, nunca en claro (ver hashPin en
+  // utils/costs.ts); cualquier otra cosa es un perfil corrupto o viejo.
+  const pin = str(raw.pin).toLowerCase()
+  if (!PIN_HASH_RE.test(pin)) return null
+  return {
+    id: str(raw.id) || crypto.randomUUID(),
+    name,
+    pin,
+  }
+}
+
 function normalizePeriod(raw: any): PayPeriod {
   if (!raw || typeof raw !== "object") return defaultPeriod
   const year = Math.round(num(raw.year, defaultPeriod.year))
@@ -495,6 +559,24 @@ export function normalizeData(raw: any): AppData {
         .filter((g: FinancialGoal | null): g is FinancialGoal => g !== null)
     : []
 
+  const costs: CostEntry[] = Array.isArray(raw.costs)
+    ? raw.costs
+        .map(normalizeCostEntry)
+        .filter((c: CostEntry | null): c is CostEntry => c !== null)
+    : []
+
+  const costTemplates: CostTemplate[] = Array.isArray(raw.costTemplates)
+    ? raw.costTemplates
+        .map(normalizeCostTemplate)
+        .filter((t: CostTemplate | null): t is CostTemplate => t !== null)
+    : []
+
+  const costOperators: CostOperator[] = Array.isArray(raw.costOperators)
+    ? raw.costOperators
+        .map(normalizeCostOperator)
+        .filter((o: CostOperator | null): o is CostOperator => o !== null)
+    : []
+
   const theme =
     raw.theme === "light" || raw.theme === "dark" ? raw.theme : "system"
 
@@ -515,6 +597,9 @@ export function normalizeData(raw: any): AppData {
     budgets,
     loans,
     goals,
+    costs,
+    costTemplates,
+    costOperators,
     openingBalance: num(raw.openingBalance, 0),
     openingBalanceDate: DATE_RE.test(str(raw.openingBalanceDate))
       ? raw.openingBalanceDate
@@ -799,6 +884,9 @@ export interface MergePreview {
   newBudgets: number
   newLoans: number
   newGoals: number
+  newCosts: number
+  newCostTemplates: number
+  newCostOperators: number
 }
 
 function mergeById<T extends { id: string }>(
@@ -866,6 +954,9 @@ export function mergeAppData(
   const budgets = mergeById(current.budgets, incoming.budgets)
   const loans = mergeById(current.loans, incoming.loans)
   const goals = mergeById(current.goals, incoming.goals)
+  const costs = mergeById(current.costs, incoming.costs)
+  const costTemplates = mergeById(current.costTemplates, incoming.costTemplates)
+  const costOperators = mergeById(current.costOperators, incoming.costOperators)
 
   const data: AppData = {
     ...current,
@@ -878,6 +969,9 @@ export function mergeAppData(
     budgets: budgets.merged,
     loans: loans.merged,
     goals: goals.merged,
+    costs: costs.merged,
+    costTemplates: costTemplates.merged,
+    costOperators: costOperators.merged,
   }
 
   const preview: MergePreview = {
@@ -893,6 +987,9 @@ export function mergeAppData(
     newBudgets: budgets.added,
     newLoans: loans.added,
     newGoals: goals.added,
+    newCosts: costs.added,
+    newCostTemplates: costTemplates.added,
+    newCostOperators: costOperators.added,
   }
 
   return { data, preview }
