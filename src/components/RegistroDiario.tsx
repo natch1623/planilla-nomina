@@ -31,7 +31,6 @@ import { removeAttachment } from "../cloud/attachments"
 import LlenadoRapido, { applyFill, resolveFillTargets } from "./LlenadoRapido"
 import type { FillOptions } from "./LlenadoRapido"
 import {
-  Badge,
   Button,
   Card,
   EmptyState,
@@ -78,28 +77,70 @@ interface Props {
 const HidePay = createContext(false)
 
 /* Clases estáticas: Tailwind no puede generar una clase construida en tiempo de ejecución. */
+/* El día trabajado es lo normal y queda discreto; los demás usan los tokens
+   `day-*`, más saturados, para que resalten en claro y en oscuro. */
 const CELL_BG: Record<DayType, string> = {
   trabajo: "bg-brand-soft",
-  feriado: "bg-violet-soft",
-  vacaciones: "bg-teal-soft",
-  incapacidad: "bg-amber-soft",
-  ausencia: "bg-danger-soft",
+  feriado: "bg-day-feriado",
+  vacaciones: "bg-day-vacaciones",
+  incapacidad: "bg-day-incapacidad",
+  ausencia: "bg-day-ausencia",
 }
 
 const CELL_FG: Record<DayType, string> = {
   trabajo: "text-brand",
-  feriado: "text-violet",
-  vacaciones: "text-teal",
-  incapacidad: "text-amber",
-  ausencia: "text-danger",
+  feriado: "text-day-feriado-fg",
+  vacaciones: "text-day-vacaciones-fg",
+  incapacidad: "text-day-incapacidad-fg",
+  ausencia: "text-day-ausencia-fg",
 }
 
-const DAY_TYPE_TONE: Record<DayType, Tone> = {
-  trabajo: "brand",
-  feriado: "violet",
-  vacaciones: "teal",
-  incapacidad: "amber",
-  ausencia: "danger",
+/** Franja superior en la celda de la cuadrícula. */
+const CELL_EDGE_TOP: Record<DayType, string> = {
+  trabajo: "",
+  feriado: "shadow-[inset_0_3px_0_var(--day-feriado-edge)]",
+  vacaciones: "shadow-[inset_0_3px_0_var(--day-vacaciones-edge)]",
+  incapacidad: "shadow-[inset_0_3px_0_var(--day-incapacidad-edge)]",
+  ausencia: "shadow-[inset_0_3px_0_var(--day-ausencia-edge)]",
+}
+
+/** Franja lateral en las filas de las vistas por día y por colaborador. */
+const CELL_EDGE_LEFT: Record<DayType, string> = {
+  trabajo: "",
+  feriado: "shadow-[inset_4px_0_0_var(--day-feriado-edge)]",
+  vacaciones: "shadow-[inset_4px_0_0_var(--day-vacaciones-edge)]",
+  incapacidad: "shadow-[inset_4px_0_0_var(--day-incapacidad-edge)]",
+  ausencia: "shadow-[inset_4px_0_0_var(--day-ausencia-edge)]",
+}
+
+const CELL_BORDER: Record<DayType, string> = {
+  trabajo: "border-brand",
+  feriado: "border-day-feriado-edge",
+  vacaciones: "border-day-vacaciones-edge",
+  incapacidad: "border-day-incapacidad-edge",
+  ausencia: "border-day-ausencia-edge",
+}
+
+/** El selector de tipo de día trae fondo y borde propios: se imponen con `!`. */
+const SELECT_MARK: Record<DayType, string> = {
+  trabajo: "",
+  feriado: "bg-day-feriado! text-day-feriado-fg! border-day-feriado-edge!",
+  vacaciones:
+    "bg-day-vacaciones! text-day-vacaciones-fg! border-day-vacaciones-edge!",
+  incapacidad:
+    "bg-day-incapacidad! text-day-incapacidad-fg! border-day-incapacidad-edge!",
+  ausencia: "bg-day-ausencia! text-day-ausencia-fg! border-day-ausencia-edge!",
+}
+
+/** Etiqueta del tipo de día con el mismo contraste que la celda. */
+function DayTag({ type, short = false }: { type: DayType; short?: boolean }) {
+  return (
+    <span
+      className={`inline-block px-1.5 py-0.5 rounded-md border text-[10px] font-bold leading-none ${CELL_BG[type]} ${CELL_FG[type]} ${CELL_BORDER[type]}`}
+    >
+      {short ? DAY_TYPE_META[type].short : DAY_TYPE_META[type].label}
+    </span>
+  )
 }
 
 /**
@@ -435,7 +476,7 @@ function Legend() {
       {DAY_TYPES.map((t) => (
         <span key={t} className="flex items-center gap-1.5">
           <span
-            className={`w-3 h-3 rounded-sm ${CELL_BG[t]} border border-line`}
+            className={`w-3.5 h-3.5 rounded-sm border-2 ${CELL_BG[t]} ${CELL_BORDER[t]}`}
           />
           {DAY_TYPE_META[t].label}
         </span>
@@ -665,10 +706,17 @@ function GridView({
                     // horario especial se distingue de un martes sin registrar.
                     const offDuty = !scheduleForDate(emp, d)
                     const bg = entry
-                      ? CELL_BG[entry.dayType]
+                      ? `${CELL_BG[entry.dayType]} ${CELL_EDGE_TOP[entry.dayType]}`
                       : offDuty
                         ? "bg-weekend"
                         : rowBg
+                    // Un feriado trabajado muestra horas como un día normal;
+                    // sin la etiqueta solo el fondo lo distinguiría.
+                    const tagged =
+                      !!entry &&
+                      entry.dayType !== "trabajo" &&
+                      usesSchedule(entry.dayType) &&
+                      !hidesHours
 
                     return (
                       <td key={d} className={`p-0 border-r border-line ${bg}`}>
@@ -704,7 +752,7 @@ function GridView({
                             // ausencia, vacaciones, etc. — no hay horas que
                             // mostrar.
                             <span
-                              className={`block text-[10px] font-bold ${CELL_FG[entry.dayType]}`}
+                              className={`block text-[10px] font-extrabold uppercase tracking-wide ${CELL_FG[entry.dayType]}`}
                             >
                               {DAY_TYPE_META[entry.dayType].label}
                             </span>
@@ -718,6 +766,13 @@ function GridView({
                           )}
                           {!hidesHours && (
                             <span className="block text-[9px] font-bold h-3 leading-3 mt-0.5">
+                              {tagged && entry && (
+                                <span
+                                  className={`uppercase mr-1 ${CELL_FG[entry.dayType]}`}
+                                >
+                                  {DAY_TYPE_META[entry.dayType].short}
+                                </span>
+                              )}
                               {isOver && (
                                 <span className="text-amber">+extra</span>
                               )}
@@ -861,11 +916,18 @@ function DayView({
             const worked = entry && !hidesHours ? calcWorkedHours(entry) : null
             const isOver = !!worked && worked.total > rules.overtimeThreshold
             return (
-              <li key={emp.id} className="border-b border-line last:border-0">
+              <li
+                key={emp.id}
+                className={`border-b border-line last:border-0 ${
+                  entry && entry.dayType !== "trabajo"
+                    ? `${CELL_BG[entry.dayType]} ${CELL_EDGE_LEFT[entry.dayType]}`
+                    : ""
+                }`}
+              >
                 <button
                   disabled={readOnly}
                   onClick={() => onOpen(emp.id, selectedDate)}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-raised disabled:hover:bg-transparent"
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-fg/5 disabled:hover:bg-transparent"
                 >
                   <span
                     className={`w-9 h-9 rounded-full shrink-0 grid place-items-center text-white text-xs font-bold ${
@@ -894,11 +956,14 @@ function DayView({
                     {entry && hidesHours ? (
                       // Sin horas que mostrar: un recuadro con el tipo de día,
                       // igual que el resto de la app.
-                      <Badge tone={DAY_TYPE_TONE[entry.dayType]}>
-                        {DAY_TYPE_META[entry.dayType].short}
-                      </Badge>
+                      <DayTag type={entry.dayType} short />
                     ) : worked && worked.total > 0 ? (
                       <>
+                        {entry && entry.dayType !== "trabajo" && (
+                          <span className="block mb-0.5">
+                            <DayTag type={entry.dayType} short />
+                          </span>
+                        )}
                         <span className="block text-sm font-mono font-bold text-fg">
                           {fmtHours(worked.total)}
                         </span>
@@ -909,9 +974,7 @@ function DayView({
                         )}
                       </>
                     ) : entry ? (
-                      <Badge tone={DAY_TYPE_TONE[entry.dayType]}>
-                        {DAY_TYPE_META[entry.dayType].short}
-                      </Badge>
+                      <DayTag type={entry.dayType} short />
                     ) : (
                       <span className="text-subtle text-lg leading-none">
                         +
@@ -1085,8 +1148,12 @@ function EmployeeView({
               <li
                 key={date}
                 className={`flex items-center gap-3 px-3 py-2 border-b border-line last:border-0 ${
-                  isWeekend(date) ? "bg-weekend" : ""
-                } ${entry ? CELL_BG[entry.dayType] : ""}`}
+                  entry
+                    ? `${CELL_BG[entry.dayType]} ${CELL_EDGE_LEFT[entry.dayType]}`
+                    : isWeekend(date)
+                      ? "bg-weekend"
+                      : ""
+                }`}
               >
                 {/* Día */}
                 <div className="w-12 shrink-0 text-center">
@@ -1129,8 +1196,10 @@ function EmployeeView({
                         update({ dayType: e.target.value as DayType })
                       }
                       aria-label={`Tipo de día ${dayNum(date)}`}
-                      className={`${inputClass} w-auto py-1 text-xs font-semibold ${
-                        CELL_FG[entry.dayType]
+                      className={`${inputClass} w-auto py-1 text-xs font-bold ${
+                        entry.dayType === "trabajo"
+                          ? CELL_FG.trabajo
+                          : SELECT_MARK[entry.dayType]
                       }`}
                     >
                       {DAY_TYPES.map((t) => (
