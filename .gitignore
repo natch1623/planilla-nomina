@@ -12,3 +12,4 @@ logs/
 .claude-replay.*
 .tmp-*
 .claude/
+muestra_*.pdf
