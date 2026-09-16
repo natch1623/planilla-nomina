@@ -1,10 +1,11 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import type { Cloud, CloudStatus } from "../cloud/useCloud"
 import { displayUser } from "../cloud/client"
-import { exportJSON } from "../store"
+import { exportJSON, loadProfileData } from "../store"
+import type { MergePreview } from "../store"
 import type { AppData } from "../types"
 import Icon from "./Icon"
-import { Button, Field, Modal, inputClass } from "./ui"
+import { Button, Field, Modal, Segmented, inputClass } from "./ui"
 import type { Tone } from "./ui"
 
 /** Texto y color de cada estado, compartidos por el botón y el panel. */
@@ -395,6 +396,200 @@ export function ConflictDialog({
         <Button size="sm" icon="download" onClick={() => exportJSON(localData)}>
           Descargar mi versión
         </Button>
+      </div>
+    </Modal>
+  )
+}
+
+/* ------------------------------------------------------------ Fusionar */
+
+/**
+ * Al iniciar: si este equipo tiene una copia solo-local de una empresa que
+ * también está en la nube, ofrece juntarlas. "Ahora no" vuelve a preguntar
+ * en la próxima apertura; "Mantener separadas" no pregunta más.
+ */
+export function MergePrompt({
+  cloud,
+  onNotify,
+}: {
+  cloud: Cloud
+  onNotify: (msg: string, tone?: Tone) => void
+}) {
+  const [skipped, setSkipped] = useState<string[]>([])
+  // No se apila sobre un conflicto: ese se resuelve primero.
+  if (cloud.conflict) return null
+  const next = cloud.mergeCandidates.find((c) => !skipped.includes(`${c.profileId}:${c.companyId}`))
+  if (!next) return null
+  return (
+    <MergeDialog
+      key={`${next.profileId}:${next.companyId}`}
+      cloud={cloud}
+      profileId={next.profileId}
+      profileName={next.profileName}
+      companies={[{ id: next.companyId, name: next.companyName }]}
+      onNotify={onNotify}
+      onClose={() => setSkipped((s) => [...s, `${next.profileId}:${next.companyId}`])}
+      onKeepApart={() => cloud.dismissMerge(next.profileId, next.companyId)}
+    />
+  )
+}
+
+export function MergeDialog({
+  cloud,
+  profileId,
+  profileName,
+  companies,
+  onNotify,
+  onClose,
+  onKeepApart,
+}: {
+  cloud: Cloud
+  profileId: string
+  profileName: string
+  /** Empresas de la nube con las que se puede fusionar; si hay varias, se elige. */
+  companies: { id: string; name: string }[]
+  onNotify: (msg: string, tone?: Tone) => void
+  onClose: () => void
+  onKeepApart?: () => void
+}) {
+  const [companyId, setCompanyId] = useState(companies[0]?.id ?? "")
+  const [winner, setWinner] = useState<"cloud" | "local">("cloud")
+  const [preview, setPreview] = useState<MergePreview | null>(null)
+  const [previewError, setPreviewError] = useState("")
+  const [busy, setBusy] = useState(false)
+  const company = companies.find((c) => c.id === companyId)
+
+  useEffect(() => {
+    if (!companyId) return
+    let alive = true
+    setPreview(null)
+    setPreviewError("")
+    cloud
+      .previewMerge(profileId, companyId)
+      .then((p) => alive && setPreview(p))
+      .catch((err) => alive && setPreviewError(err instanceof Error ? err.message : String(err)))
+    return () => {
+      alive = false
+    }
+    // Solo se recalcula al cambiar de empresa, no con cada render de `cloud`.
+  }, [profileId, companyId])
+
+  async function merge() {
+    setBusy(true)
+    try {
+      await cloud.mergeLocal(profileId, companyId, winner)
+      onNotify(`«${company?.name || profileName}» quedó en una sola versión, sincronizada con la nube`)
+      onClose()
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : "No se pudo fusionar", "danger")
+      setBusy(false)
+    }
+  }
+
+  const adds = preview
+    ? [
+        [preview.newEmployees, "colaborador", "colaboradores"],
+        [preview.newEntries, "registro diario", "registros diarios"],
+        [preview.newClosedPeriods, "quincena cerrada", "quincenas cerradas"],
+        [preview.newTransactions, "movimiento", "movimientos"],
+        [preview.newLoans, "préstamo", "préstamos"],
+        [preview.newCosts, "pago de costos", "pagos de costos"],
+      ].filter(([n]) => (n as number) > 0)
+    : []
+  const shared = preview ? preview.updatedEmployees + preview.updatedEntries : 0
+
+  return (
+    <Modal
+      title="Fusionar con la nube"
+      subtitle={
+        <>
+          Este equipo tiene una copia local de <strong className="text-fg">«{profileName || "Sin nombre"}»</strong>{" "}
+          que no está sincronizada, y la misma empresa está en la nube.
+        </>
+      }
+      onClose={busy ? () => {} : onClose}
+      width="max-w-md"
+      footer={
+        <>
+          <Button onClick={onClose} disabled={busy} className="flex-1">
+            Ahora no
+          </Button>
+          <Button variant="primary" className="flex-1" disabled={busy || !companyId} onClick={merge}>
+            {busy ? "Fusionando…" : "Fusionar"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3 text-sm text-muted leading-relaxed">
+        {companies.length > 1 && (
+          <Field label="Empresa de la nube">
+            <select value={companyId} onChange={(e) => setCompanyId(e.target.value)} className={inputClass}>
+              {companies.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name || "Sin nombre"}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+
+        <p>
+          Al fusionar, lo que solo está en este equipo se agrega a la nube y queda{" "}
+          <strong className="text-fg">una sola empresa</strong> que todos ven. La configuración
+          (tarifas, horarios, nombre) se toma de la nube.
+        </p>
+
+        <div className="p-3 rounded-xl bg-raised text-xs">
+          {previewError ? (
+            <span className="text-danger font-semibold">{previewError}</span>
+          ) : !preview ? (
+            "Comparando las dos versiones…"
+          ) : adds.length === 0 ? (
+            "Esta copia no tiene nada que la nube no tenga ya."
+          ) : (
+            <>
+              <strong className="text-fg">Se agregan desde este equipo:</strong>{" "}
+              {adds.map(([n, one, many]) => `${n} ${n === 1 ? one : many}`).join(", ")}.
+            </>
+          )}
+        </div>
+
+        {shared > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs">
+              {shared} {shared === 1 ? "dato está" : "datos están"} en las dos versiones. Si difieren, se
+              conserva:
+            </p>
+            <Segmented
+              size="sm"
+              value={winner}
+              onChange={setWinner}
+              options={[
+                { value: "cloud", label: "Lo de la nube" },
+                { value: "local", label: "Lo de este equipo" },
+              ]}
+            />
+          </div>
+        )}
+
+        <p className="text-xs">
+          La copia local se reemplaza por la versión fusionada. Si quieres, descarga antes un respaldo.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            icon="download"
+            disabled={busy}
+            onClick={() => exportJSON(loadProfileData(profileId))}
+          >
+            Descargar respaldo local
+          </Button>
+          {onKeepApart && (
+            <Button size="sm" disabled={busy} onClick={onKeepApart}>
+              Mantener separadas
+            </Button>
+          )}
+        </div>
       </div>
     </Modal>
   )

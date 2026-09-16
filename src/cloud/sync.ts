@@ -125,3 +125,76 @@ export function profileForCompany(links: CloudLinks, companyId: string): string 
   }
   return null
 }
+
+/* --------------------------------------------------------------------- */
+/* Copias locales de una empresa que también está en la nube               */
+/* --------------------------------------------------------------------- */
+
+/** "Princess, S.A." y "princess s.a" son la misma empresa. */
+export function sameCompanyName(a: string, b: string): boolean {
+  const clean = (s: string) =>
+    s
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+  const ca = clean(a)
+  return ca !== "" && ca === clean(b)
+}
+
+export interface MergeCandidate {
+  /** Perfil de este equipo que no está vinculado a la nube. */
+  profileId: string
+  profileName: string
+  companyId: string
+  companyName: string
+}
+
+/**
+ * Perfiles solo-locales con el mismo nombre que una empresa de la nube que
+ * este usuario puede leer y escribir completa. Es lo que pasa cuando alguien
+ * siguió trabajando en su copia local mientras otra persona subía la empresa.
+ */
+export function findMergeCandidates(
+  profiles: { id: string; name: string }[],
+  links: CloudLinks,
+  companies: { id: string; name: string; access: { readsAll: boolean; writesAll: boolean } }[],
+  dismissed: string[] = [],
+): MergeCandidate[] {
+  const out: MergeCandidate[] = []
+  for (const p of profiles) {
+    if (links[p.id]) continue
+    for (const c of companies) {
+      if (!c.access.readsAll || !c.access.writesAll) continue
+      if (!sameCompanyName(p.name, c.name)) continue
+      if (dismissed.includes(mergeKey(p.id, c.id))) continue
+      out.push({ profileId: p.id, profileName: p.name, companyId: c.id, companyName: c.name })
+    }
+  }
+  return out
+}
+
+const DISMISSED_KEY = "planilla_merge_dismissed"
+
+export function mergeKey(profileId: string, companyId: string): string {
+  return `${profileId}:${companyId}`
+}
+
+/** Pares perfil ↔ empresa que el usuario pidió mantener separados. */
+export function readDismissedMerges(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? "[]")
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : []
+  } catch {
+    return []
+  }
+}
+
+export function writeDismissedMerges(keys: string[]): void {
+  try {
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify(keys))
+  } catch (err) {
+    console.error("No se pudo guardar la preferencia de fusión", err)
+  }
+}

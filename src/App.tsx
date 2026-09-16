@@ -28,7 +28,7 @@ import { calcPeriodSummaries, rulesFrom } from "./utils/calculations"
 import { useCloud } from "./cloud/useCloud"
 import { SECTIONS } from "./cloud/sections"
 import type { Section } from "./cloud/sections"
-import { CloudBanner, CloudButton, ConflictDialog } from "./components/Nube"
+import { CloudBanner, CloudButton, ConflictDialog, MergePrompt } from "./components/Nube"
 import NubePanel from "./components/NubePanel"
 import Dashboard from "./components/Dashboard"
 import Icon from "./components/Icon"
@@ -322,6 +322,33 @@ export default function App() {
     [activeId, data, index],
   )
 
+  /**
+   * Resultado de fusionar una copia local con la nube: queda en `keepId`
+   * (activo desde ahora) y la copia local ya fusionada se borra.
+   */
+  const adoptMerged = useCallback(
+    (keepId: string, merged: AppData, dropId: string | null) => {
+      if (activeId !== keepId && activeId !== dropId) saveProfileData(activeId, data)
+      let next = dropId ? (deleteProfile(index, dropId) ?? index) : index
+      saveProfileData(keepId, merged)
+      next = {
+        activeId: keepId,
+        profiles: next.profiles.map((p) =>
+          p.id === keepId ? { ...p, name: merged.companyName } : p,
+        ),
+      }
+      saveIndex(next)
+      if (keepId !== activeId) {
+        firstRender.current = true
+        setTab("dashboard")
+      }
+      setIndex(next)
+      setData(merged)
+      setProfileMenu(false)
+    },
+    [activeId, data, index],
+  )
+
   const cloud = useCloud({
     activeId,
     data,
@@ -331,6 +358,8 @@ export default function App() {
     switchProfile,
     forgetProfiles,
     supportedSections: SUPPORTED_SECTIONS,
+    profiles: index.profiles,
+    adoptMerged,
   })
 
   /**
@@ -840,6 +869,7 @@ export default function App() {
       )}
 
       <ConflictDialog cloud={cloud} localData={data} />
+      <MergePrompt cloud={cloud} onNotify={push} />
 
       <ToastStack toasts={toasts} />
     </div>

@@ -889,16 +889,22 @@ export interface MergePreview {
   newCostOperators: number
 }
 
+/** Qué versión queda cuando el mismo dato está en ambos lados. */
+export type MergeWinner = "incoming" | "current"
+
 function mergeById<T extends { id: string }>(
   current: T[],
   incoming: T[],
+  winner: MergeWinner,
 ): { merged: T[]; added: number; updated: number } {
   const map = new Map(current.map((x) => [x.id, x]))
   let added = 0
   let updated = 0
   for (const item of incoming) {
-    if (map.has(item.id)) updated++
-    else added++
+    if (map.has(item.id)) {
+      updated++
+      if (winner === "current") continue
+    } else added++
     map.set(item.id, item)
   }
   return { merged: [...map.values()], added, updated }
@@ -911,12 +917,17 @@ function mergeById<T extends { id: string }>(
  * pisan (son montos ya pagados); todo lo demás se identifica por `id`, salvo
  * los registros diarios, que se identifican por colaborador + fecha porque
  * dos archivos distintos generan ids distintos para "el mismo día".
+ *
+ * `winner` decide qué versión queda cuando un dato está en ambos: al importar
+ * un archivo gana el archivo; al fusionar con la nube se puede preferir la
+ * de la nube.
  */
 export function mergeAppData(
   current: AppData,
   incoming: AppData,
+  winner: MergeWinner = "incoming",
 ): { data: AppData; preview: MergePreview } {
-  const employees = mergeById(current.employees, incoming.employees)
+  const employees = mergeById(current.employees, incoming.employees, winner)
 
   const entryKey = (e: TimeEntry) => `${e.employeeId}__${e.date}`
   const entryMap = new Map(current.timeEntries.map((e) => [entryKey(e), e]))
@@ -924,14 +935,17 @@ export function mergeAppData(
   let updatedEntries = 0
   for (const e of incoming.timeEntries) {
     const k = entryKey(e)
-    if (entryMap.has(k)) updatedEntries++
-    else newEntries++
+    if (entryMap.has(k)) {
+      updatedEntries++
+      if (winner === "current") continue
+    } else newEntries++
     entryMap.set(k, e)
   }
 
   const adjustments = mergeById(
     current.manualAdjustments,
     incoming.manualAdjustments,
+    winner,
   )
 
   const closedMap = new Map(current.closedPeriods.map((c) => [c.key, c]))
@@ -946,17 +960,18 @@ export function mergeAppData(
     }
   }
 
-  const transactions = mergeById(current.transactions, incoming.transactions)
+  const transactions = mergeById(current.transactions, incoming.transactions, winner)
   const counterparties = mergeById(
     current.counterparties,
     incoming.counterparties,
+    winner,
   )
-  const budgets = mergeById(current.budgets, incoming.budgets)
-  const loans = mergeById(current.loans, incoming.loans)
-  const goals = mergeById(current.goals, incoming.goals)
-  const costs = mergeById(current.costs, incoming.costs)
-  const costTemplates = mergeById(current.costTemplates, incoming.costTemplates)
-  const costOperators = mergeById(current.costOperators, incoming.costOperators)
+  const budgets = mergeById(current.budgets, incoming.budgets, winner)
+  const loans = mergeById(current.loans, incoming.loans, winner)
+  const goals = mergeById(current.goals, incoming.goals, winner)
+  const costs = mergeById(current.costs, incoming.costs, winner)
+  const costTemplates = mergeById(current.costTemplates, incoming.costTemplates, winner)
+  const costOperators = mergeById(current.costOperators, incoming.costOperators, winner)
 
   const data: AppData = {
     ...current,

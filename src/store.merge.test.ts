@@ -75,4 +75,25 @@ describe("mergeAppData", () => {
     expect(merged.companyName).toBe("Mi empresa")
     expect(merged.overtimeThreshold).toBe(8)
   })
+
+  it("con winner 'current' agrega lo nuevo pero no pisa lo repetido", () => {
+    const current = data({
+      employees: [emp("a", "Ana (nube)")],
+      timeEntries: [entry("1", "a", "2026-09-01", "nube")],
+    })
+    const incoming = data({
+      employees: [emp("a", "Ana (local)"), emp("b", "Beto")],
+      timeEntries: [entry("2", "a", "2026-09-01", "local"), entry("3", "a", "2026-09-02")],
+    })
+
+    const { data: merged, preview } = mergeAppData(current, incoming, "current")
+
+    expect(merged.employees.find((e) => e.id === "a")?.name).toBe("Ana (nube)")
+    expect(merged.employees).toHaveLength(2)
+    expect(merged.timeEntries.find((e) => e.date === "2026-09-01")?.notes).toBe("nube")
+    expect(merged.timeEntries).toHaveLength(2)
+    expect(preview.newEmployees).toBe(1)
+    expect(preview.updatedEmployees).toBe(1)
+    expect(preview.newEntries).toBe(1)
+  })
 })

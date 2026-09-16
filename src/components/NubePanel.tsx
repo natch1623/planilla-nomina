@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react"
 import * as api from "../cloud/client"
 import type { CompanyMember, CompanyRole, RoleDef } from "../cloud/client"
+import { sameCompanyName } from "../cloud/sync"
 import type { Cloud } from "../cloud/useCloud"
 import Icon from "./Icon"
-import { STATUS_INFO } from "./Nube"
+import { MergeDialog, STATUS_INFO } from "./Nube"
 import { Button, Card, CardHeader, ConfirmDialog, Field, IconButton, inputClass } from "./ui"
 import type { Tone } from "./ui"
 
@@ -37,7 +38,16 @@ export default function NubePanel({
 }) {
   const [busy, setBusy] = useState(false)
   const [confirm, setConfirm] = useState<"unlink" | "delete" | null>(null)
+  const [merging, setMerging] = useState(false)
   const info = STATUS_INFO[cloud.status]
+  // Las que coinciden de nombre van primero: casi siempre es esa.
+  const mergeTargets = cloud.companies
+    .filter((c) => c.access.readsAll && c.access.writesAll)
+    .sort(
+      (a, b) =>
+        Number(sameCompanyName(b.name, cloud.activeProfileName)) -
+        Number(sameCompanyName(a.name, cloud.activeProfileName)),
+    )
 
   async function run(action: () => Promise<void>, ok: string) {
     setBusy(true)
@@ -94,17 +104,29 @@ export default function NubePanel({
               </div>
             </div>
             {cloud.status === "local" && (
-              <Button
-                variant="primary"
-                icon="upload"
-                disabled={busy}
-                className="shrink-0"
-                onClick={() => run(cloud.uploadActive, "Empresa subida a la nube")}
-              >
-                {busy ? "Subiendo…" : "Subir a la nube"}
-              </Button>
+              <div className="flex flex-wrap gap-2 shrink-0">
+                {mergeTargets.length > 0 && (
+                  <Button icon="cloud" disabled={busy} onClick={() => setMerging(true)}>
+                    Fusionar con la nube
+                  </Button>
+                )}
+                <Button
+                  variant="primary"
+                  icon="upload"
+                  disabled={busy}
+                  onClick={() => run(cloud.uploadActive, "Empresa subida a la nube")}
+                >
+                  {busy ? "Subiendo…" : "Subir a la nube"}
+                </Button>
+              </div>
             )}
           </div>
+          {cloud.status === "local" && mergeTargets.length > 0 && (
+            <p className="text-xs text-subtle -mt-2 px-1">
+              ¿Esta empresa ya está en la nube? Usa «Fusionar con la nube» para juntar las dos copias en
+              vez de subir una repetida.
+            </p>
+          )}
 
           {cloud.link && cloud.company && (
             <Members
@@ -131,6 +153,16 @@ export default function NubePanel({
         </div>
       )}
 
+      {merging && (
+        <MergeDialog
+          cloud={cloud}
+          profileId={cloud.activeProfileId}
+          profileName={cloud.activeProfileName}
+          companies={mergeTargets}
+          onNotify={onNotify}
+          onClose={() => setMerging(false)}
+        />
+      )}
       {confirm === "unlink" && (
         <ConfirmDialog
           title="Dejar de sincronizar"

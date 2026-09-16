@@ -3,10 +3,13 @@ import { defaultData } from "../store"
 import type { AppData } from "../types"
 import {
   decideRemote,
+  findMergeCandidates,
   isFromNewerApp,
+  mergeKey,
   onlyLocalFieldsChanged,
   profileForCompany,
   readLinks,
+  sameCompanyName,
   withLocalFields,
   writeLinks,
 } from "./sync"
@@ -108,5 +111,34 @@ describe("vínculos con la nube", () => {
     const links = { p1: { companyId: "c1", revision: 1, dirty: false } }
     expect(profileForCompany(links, "c1")).toBe("p1")
     expect(profileForCompany(links, "c2")).toBeNull()
+  })
+})
+
+describe("copias locales de empresas de la nube", () => {
+  const full = { readsAll: true, writesAll: true }
+
+  it("reconoce el mismo nombre sin importar mayúsculas, tildes ni puntuación", () => {
+    expect(sameCompanyName("Princess, S.A.", "princess s.a")).toBe(true)
+    expect(sameCompanyName("Gestión", "GESTION")).toBe(true)
+    expect(sameCompanyName("ACME", "ACME 2")).toBe(false)
+    expect(sameCompanyName("", "")).toBe(false)
+  })
+
+  it("propone solo perfiles sin vincular y empresas con acceso completo", () => {
+    const profiles = [
+      { id: "local", name: "ACME" },
+      { id: "sincronizado", name: "ACME" },
+      { id: "otra", name: "Otra" },
+    ]
+    const links = { sincronizado: { companyId: "c1", revision: 3, dirty: false } }
+    const companies = [
+      { id: "c1", name: "acme", access: full },
+      { id: "c2", name: "Otra", access: { readsAll: false, writesAll: false } },
+    ]
+
+    expect(findMergeCandidates(profiles, links, companies)).toEqual([
+      { profileId: "local", profileName: "ACME", companyId: "c1", companyName: "acme" },
+    ])
+    expect(findMergeCandidates(profiles, links, companies, [mergeKey("local", "c1")])).toEqual([])
   })
 })

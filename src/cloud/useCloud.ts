@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AppData } from "../types"
-import { DATA_VERSION, defaultData, normalizeData } from "../store"
+import { DATA_VERSION, defaultData, loadProfileData, mergeAppData, normalizeData } from "../store"
+import type { MergePreview, MergeWinner } from "../store"
 import * as api from "./client"
 import type { CloudCompany, CloudSnapshot, RoleAccess } from "./client"
 import { countInlineAttachments, migrateAttachments, setAttachmentCompany } from "./attachments"
@@ -8,11 +9,15 @@ import { applySection, sectionPayload } from "./sections"
 import type { Section } from "./sections"
 import {
   decideRemote,
+  findMergeCandidates,
   isFromNewerApp,
+  mergeKey,
   onlyLocalFieldsChanged,
   profileForCompany,
+  readDismissedMerges,
   readLinks,
   withLocalFields,
+  writeDismissedMerges,
   writeLinks,
 } from "./sync"
 import type { CloudLink, CloudLinks } from "./sync"
@@ -47,6 +52,13 @@ interface Options {
   forgetProfiles: (ids: string[]) => void
   /** Secciones que esta versión de la app sabe mostrar. */
   supportedSections: Section[]
+  /** Perfiles de este equipo, para encontrar copias locales de la nube. */
+  profiles: { id: string; name: string }[]
+  /**
+   * Deja `data` en el perfil `keepId`, lo activa y borra `dropId` (la copia
+   * local que ya quedó fusionada).
+   */
+  adoptMerged: (keepId: string, data: AppData, dropId: string | null) => void
 }
 
 /** Espera tras la última edición antes de subir: agrupa una ráfaga de teclas. */
@@ -63,6 +75,8 @@ export function useCloud({
   switchProfile,
   forgetProfiles,
   supportedSections,
+  profiles,
+  adoptMerged,
 }: Options) {
   const available = api.cloudAvailable
   const [email, setEmail] = useState<string | null>(null)
@@ -504,6 +518,97 @@ export function useCloud({
     [applySnapshot, notify, patchLink],
   )
 
+  /* ---------------------- Fusionar copia local y nube ---------------------- */
+
+  const [dismissedMerges, setDismissedMerges] = useState<string[]>(() =>
+    available ? readDismissedMerges() : [],
+  )
+
+  /** Copias solo-locales con el mismo nombre que una empresa de la nube. */
+  const mergeCandidates = useMemo(
+    () => findMergeCandidates(profiles, links, companies, dismissedMerges),
+    [profiles, links, companies, dismissedMerges],
+  )
+
+  /** "Mantener separadas": no volver a proponer este par. */
+  const dismissMerge = useCallback((profileId: string, companyId: string) => {
+    setDismissedMerges((prev) => {
+      const next = [...prev, mergeKey(profileId, companyId)]
+      writeDismissedMerges(next)
+      return next
+    })
+  }, [])
+
+  const profileData = useCallback(
+    (profileId: string) => (profileId === activeRef.current ? dataRef.current : loadProfileData(profileId)),
+    [],
+  )
+
+  const fullAccessCompany = useCallback(
+    (companyIdToMerge: string) => {
+      const target = companies.find((c) => c.id === companyIdToMerge)
+      if (!target || !target.access.readsAll || !target.access.writesAll) {
+        throw new api.CloudError("Para fusionar necesitas poder editar la empresa completa en la nube.")
+      }
+      return target
+    },
+    [companies],
+  )
+
+  /** Qué agregaría la copia local a la de la nube, sin guardar nada. */
+  const previewMerge = useCallback(
+    async (profileId: string, companyIdToMerge: string): Promise<MergePreview> => {
+      fullAccessCompany(companyIdToMerge)
+      const snap = await api.fetchCompany(companyIdToMerge)
+      return mergeAppData(normalizeData(snap.data), profileData(profileId)).preview
+    },
+    [fullAccessCompany, profileData],
+  )
+
+  /**
+   * Junta una copia solo-local con la empresa de la nube y sube el resultado.
+   * La configuración (tarifas, nombre…) queda la de la nube; `winner` decide
+   * qué versión queda cuando el mismo dato está en ambas.
+   */
+  const mergeLocal = useCallback(
+    async (profileId: string, companyIdToMerge: string, winner: "cloud" | "local") => {
+      fullAccessCompany(companyIdToMerge)
+      if (linksRef.current[profileId]) {
+        throw new api.CloudError("Esa empresa de este equipo ya está vinculada a la nube.")
+      }
+      const linkedId = profileForCompany(linksRef.current, companyIdToMerge)
+      if (linkedId && linksRef.current[linkedId].dirty) {
+        throw new api.CloudError(
+          "La copia sincronizada de esta empresa tiene cambios sin subir. Espera a que termine de subir y vuelve a intentar.",
+        )
+      }
+      const local = profileData(profileId)
+      const prefer: MergeWinner = winner === "cloud" ? "current" : "incoming"
+
+      // Si alguien guarda justo en medio, se vuelve a leer y a fusionar.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const snap = await api.fetchCompany(companyIdToMerge)
+        if (isFromNewerApp(snap.data, DATA_VERSION)) {
+          throw new api.CloudError("La nube tiene datos de una versión más nueva de la app. Recarga la página.")
+        }
+        const merged = mergeAppData(normalizeData(snap.data), local, prefer).data
+        const res = await api.saveCompany(companyIdToMerge, merged.companyName, merged, snap.revision)
+        if (!res.ok) continue
+
+        const keepId = linkedId ?? profileId
+        const dropId = linkedId ? profileId : null
+        setLinks((prev) => ({ ...prev, [keepId]: { companyId: companyIdToMerge, revision: res.revision, dirty: false } }))
+        // Lo que se muestra ya es lo que está en la nube: no hay nada que subir.
+        if (keepId === activeRef.current) applyingRemote.current = true
+        adoptMerged(keepId, normalizeData(withLocalFields(merged, local)), dropId)
+        await refreshCompanies()
+        return
+      }
+      throw new api.CloudError("Alguien está guardando esta empresa ahora mismo. Intenta de nuevo en un momento.")
+    },
+    [adoptMerged, fullAccessCompany, profileData, refreshCompanies, setLinks],
+  )
+
   const retry = useCallback(() => {
     setPhase("idle")
     setLastError("")
@@ -556,6 +661,12 @@ export function useCloud({
     resolveConflict,
     retry,
     refreshCompanies,
+    activeProfileId: activeId,
+    activeProfileName: profiles.find((p) => p.id === activeId)?.name ?? "",
+    mergeCandidates,
+    dismissMerge,
+    previewMerge,
+    mergeLocal,
   }
 }
 
