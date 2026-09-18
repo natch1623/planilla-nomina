@@ -27,6 +27,13 @@ import type { Tone } from "./ui"
 
 interface Props {
   data: AppData
+  /**
+   * Falso solo con una cuenta de nube de rango restringido (p. ej. "costos"
+   * compartida por estación). Sin nube, o con una cuenta que administra la
+   * empresa, se trata como administrador: no hay nadie de rango más alto a
+   * quien pedirle el PIN.
+   */
+  isAdmin?: boolean
   onChange: (patch: Partial<AppData>) => void
   onNotify: (text: string, tone?: Tone) => void
 }
@@ -102,12 +109,19 @@ const emptyCost = (): Draft => ({
   processedBy: "",
 })
 
-export default function Costos({ data, onChange, onNotify }: Props) {
+export default function Costos({
+  data,
+  isAdmin = true,
+  onChange,
+  onNotify,
+}: Props) {
   const [quick, setQuick] = useState<Draft>(emptyCost)
   const [activeOperatorId, setActiveOperatorId] = useState(readActiveOperatorId)
   const [editing, setEditing] = useState<CostEntry | null>(null)
   const [form, setForm] = useState<Draft>(emptyCost())
   const [pendingDelete, setPendingDelete] = useState<CostEntry | null>(null)
+  const [pendingDeleteOperator, setPendingDeleteOperator] =
+    useState<CostOperator | null>(null)
   const [recipientFilter, setRecipientFilter] =
     useState<RecipientFilter>("todos")
   const [query, setQuery] = useState("")
@@ -222,6 +236,13 @@ export default function Costos({ data, onChange, onNotify }: Props) {
     if (activeOperatorId === id) logout()
   }
 
+  function confirmDeleteOperator() {
+    if (!pendingDeleteOperator) return
+    deleteOperator(pendingDeleteOperator.id)
+    onNotify(`Perfil de ${pendingDeleteOperator.name} eliminado`, "danger")
+    setPendingDeleteOperator(null)
+  }
+
   function handleEditSave() {
     if (!editing) return
     if (form.amount <= 0 || !form.date || !form.recipientName.trim()) return
@@ -286,7 +307,7 @@ export default function Costos({ data, onChange, onNotify }: Props) {
         <TurnoLoginGate
           operators={operators}
           onLogin={login}
-          onDeleteOperator={deleteOperator}
+          onRequestDelete={setPendingDeleteOperator}
         />
       ) : (
         <>
@@ -496,6 +517,15 @@ export default function Costos({ data, onChange, onNotify }: Props) {
           onCancel={() => setPendingDelete(null)}
         />
       )}
+
+      {pendingDeleteOperator && (
+        <DeleteOperatorDialog
+          operator={pendingDeleteOperator}
+          isAdmin={isAdmin}
+          onCancel={() => setPendingDeleteOperator(null)}
+          onConfirm={confirmDeleteOperator}
+        />
+      )}
     </div>
   )
 }
@@ -584,11 +614,11 @@ function SaveTemplateLink({
 function TurnoLoginGate({
   operators,
   onLogin,
-  onDeleteOperator,
+  onRequestDelete,
 }: {
   operators: CostOperator[]
   onLogin: (name: string, pin: string) => Promise<string | null>
-  onDeleteOperator: (id: string) => void
+  onRequestDelete: (operator: CostOperator) => void
 }) {
   const [name, setName] = useState("")
   const [pin, setPin] = useState("")
@@ -654,7 +684,7 @@ function TurnoLoginGate({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onDeleteOperator(o.id)}
+                  onClick={() => onRequestDelete(o)}
                   aria-label={`Quitar perfil ${o.name}`}
                   className="p-0.5 text-subtle hover:text-danger"
                 >
@@ -727,6 +757,131 @@ function TurnoLoginGate({
         </Button>
       </form>
     </Card>
+  )
+}
+
+/**
+ * Borrar un perfil exige su PIN, igual que iniciar turno con él — así una
+ * encargada no puede desaparecer el perfil de otra por error o a propósito.
+ * "Soy administradora" salta esa verificación, pero deja bien claro lo que
+ * implica antes de dejar confirmar: no hay una cuenta de administrador real
+ * detrás, solo una advertencia más fuerte.
+ */
+function DeleteOperatorDialog({
+  operator,
+  isAdmin,
+  onCancel,
+  onConfirm,
+}: {
+  operator: CostOperator
+  isAdmin: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const [mode, setMode] = useState<"pin" | "admin">("pin")
+  const [pin, setPin] = useState("")
+  const [error, setError] = useState("")
+  const [busy, setBusy] = useState(false)
+
+  async function confirmWithPin() {
+    if (!/^\d{4}$/.test(pin)) {
+      setError("El PIN debe tener 4 dígitos")
+      return
+    }
+    setBusy(true)
+    const ok = (await hashPin(pin)) === operator.pin
+    setBusy(false)
+    if (!ok) {
+      setError("PIN incorrecto")
+      return
+    }
+    onConfirm()
+  }
+
+  return (
+    <Modal
+      title={`Eliminar perfil de ${operator.name}`}
+      onClose={onCancel}
+      width="max-w-sm"
+      footer={
+        mode === "pin" ? (
+          <>
+            <Button className="flex-1" onClick={onCancel}>
+              Cancelar
+            </Button>
+            <Button
+              variant="danger"
+              className="flex-1"
+              disabled={busy}
+              onClick={confirmWithPin}
+            >
+              {busy ? "Verificando…" : "Eliminar"}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button className="flex-1" onClick={onCancel}>
+              Cancelar
+            </Button>
+            <Button variant="danger" className="flex-1" onClick={onConfirm}>
+              Eliminar de todas formas
+            </Button>
+          </>
+        )
+      }
+    >
+      {mode === "pin" ? (
+        <div className="space-y-3">
+          <p className="text-sm text-muted">
+            Pide a {operator.name} que escriba su PIN para confirmar que ella
+            misma quiere eliminar su perfil.
+          </p>
+          <Field label="PIN">
+            <input
+              value={pin}
+              onChange={(e) => {
+                setPin(e.target.value.replace(/\D/g, "").slice(0, 4))
+                setError("")
+              }}
+              type="password"
+              inputMode="numeric"
+              placeholder="••••"
+              className={inputNumClass}
+              autoFocus
+            />
+          </Field>
+          {error && <p className="text-xs text-danger font-semibold">{error}</p>}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                setMode("admin")
+                setError("")
+              }}
+              className="text-xs text-brand font-semibold"
+            >
+              ¿Eres administradora? Eliminar sin PIN
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="flex items-start gap-2 text-sm text-danger font-semibold bg-danger-soft rounded-xl p-3">
+            <Icon name="alert" className="w-4 h-4 shrink-0 mt-0.5" />
+            Vas a eliminar el perfil de {operator.name} sin verificar su PIN.
+            Hazlo solo si tienes autoridad para decidirlo — perderá acceso
+            para iniciar turno con este nombre y no se puede deshacer.
+          </p>
+          <button
+            type="button"
+            onClick={() => setMode("pin")}
+            className="text-xs text-muted font-semibold"
+          >
+            ← Volver a pedir el PIN
+          </button>
+        </div>
+      )}
+    </Modal>
   )
 }
 

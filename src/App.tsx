@@ -779,6 +779,11 @@ export default function App() {
           {activeTab === "costos" && (
             <Costos
               data={data}
+              // Sin nube, o con una cuenta que administra la empresa, no hay
+              // ningún rol restringido de por medio: se trata igual que un
+              // administrador. Solo una cuenta de rango limitado (p. ej. la
+              // "costos" compartida por estación) no lo es.
+              isAdmin={!cloud.access || cloud.access.managesMembers}
               onChange={(patch) => setData((d) => ({ ...d, ...patch }))}
               onNotify={push}
             />
