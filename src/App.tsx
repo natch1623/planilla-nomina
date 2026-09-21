@@ -808,6 +808,7 @@ export default function App() {
                   <NubePanel cloud={cloud} onNotify={push} />
                 ) : undefined
               }
+              cloud={cloud}
             />
           )}
         </Suspense>

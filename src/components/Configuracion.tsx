@@ -42,6 +42,7 @@ interface Props {
   onNotify: (text: string, tone?: Tone) => void
   /** Tarjeta de la nube; ausente cuando el build no trae credenciales. */
   cloudPanel?: React.ReactNode
+  cloud?: any /** Cloud object from useCloud for manual merge functionality */
 }
 
 type Pending = "clear" | "close" | "reopen" | "import" | null
@@ -56,10 +57,15 @@ export default function Configuracion({
   onChange,
   onNotify,
   cloudPanel,
+  cloud,
 }: Props) {
   const [pending, setPending] = useState<Pending>(null)
   const [importedData, setImportedData] = useState<AppData | null>(null)
   const [pendingProfile, setPendingProfile] = useState<ProfileMeta | null>(null)
+  const [mergeDialog, setMergeDialog] = useState(false)
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string>("")
+  const [selectedPeriods, setSelectedPeriods] = useState<Set<string>>(new Set())
+  const [deleteAfterMerge, setDeleteAfterMerge] = useState(false)
 
   const { currentPeriod } = data
   const { start, end } = getPeriodDates(currentPeriod)
@@ -222,6 +228,35 @@ export default function Configuracion({
       </Card>
 
       {cloudPanel}
+
+      {/* Fusión manual */}
+      {cloud?.companies && cloud.companies.length > 0 && (
+        <Card>
+          <CardHeader
+            title="Fusionar empresas"
+            subtitle="Pasar quincenas seleccionadas del local a la nube manualmente"
+          />
+          <div className="space-y-2.5">
+            <DataRow
+              title="Fusionar con la nube"
+              desc="Elige una empresa de la nube y qué quincenas pasar, luego decide si conservar o eliminar la copia local"
+              action={
+                <Button
+                  icon="cloud"
+                  onClick={() => {
+                    setMergeDialog(true)
+                    setSelectedCompanyId(cloud.companies[0]?.id ?? "")
+                    setSelectedPeriods(new Set())
+                    setDeleteAfterMerge(false)
+                  }}
+                >
+                  Fusionar
+                </Button>
+              }
+            />
+          </div>
+        </Card>
+      )}
 
       {/* Reglas de cálculo */}
       <Card>
@@ -603,6 +638,22 @@ export default function Configuracion({
           </div>
         </Modal>
       )}
+
+      {mergeDialog && cloud && (
+        <ManualMergeDialog
+          cloud={cloud}
+          data={data}
+          activeProfileId={activeProfileId}
+          selectedCompanyId={selectedCompanyId}
+          selectedPeriods={selectedPeriods}
+          deleteAfterMerge={deleteAfterMerge}
+          onCompanyChange={setSelectedCompanyId}
+          onPeriodsChange={setSelectedPeriods}
+          onDeleteChange={setDeleteAfterMerge}
+          onClose={() => setMergeDialog(false)}
+          onNotify={onNotify}
+        />
+      )}
     </div>
   )
 }
@@ -680,5 +731,194 @@ function Stat({ label, value }: StatProps) {
       <div className="num text-2xl font-extrabold text-fg">{value}</div>
       <div className="text-[11px] text-muted mt-0.5">{label}</div>
     </div>
+  )
+}
+
+/* --------------------------------------------------------- Fusión manual */
+
+interface ManualMergeDialogProps {
+  cloud: any
+  data: AppData
+  activeProfileId: string
+  selectedCompanyId: string
+  selectedPeriods: Set<string>
+  deleteAfterMerge: boolean
+  onCompanyChange: (id: string) => void
+  onPeriodsChange: (periods: Set<string>) => void
+  onDeleteChange: (value: boolean) => void
+  onClose: () => void
+  onNotify: (text: string, tone?: Tone) => void
+}
+
+function ManualMergeDialog({
+  cloud,
+  data,
+  activeProfileId,
+  selectedCompanyId,
+  selectedPeriods,
+  deleteAfterMerge,
+  onCompanyChange,
+  onPeriodsChange,
+  onDeleteChange,
+  onClose,
+  onNotify,
+}: ManualMergeDialogProps) {
+  const [busy, setBusy] = useState(false)
+  const [preview, setPreview] = useState<any>(null)
+  const [previewError, setPreviewError] = useState("")
+
+  useEffect(() => {
+    if (!selectedCompanyId) return
+    let alive = true
+    setPreview(null)
+    setPreviewError("")
+    cloud
+      .previewMerge(activeProfileId, selectedCompanyId)
+      .then((p: any) => alive && setPreview(p))
+      .catch((err: Error) => alive && setPreviewError(err instanceof Error ? err.message : String(err)))
+    return () => {
+      alive = false
+    }
+  }, [activeProfileId, selectedCompanyId, cloud])
+
+  async function handleMerge() {
+    setBusy(true)
+    try {
+      // Crear una copia de los datos local con solo las quincenas seleccionadas
+      let dataToMerge = data
+      if (selectedPeriods.size > 0) {
+        // Filtrar closedPeriods para incluir solo las seleccionadas
+        dataToMerge = {
+          ...data,
+          closedPeriods: data.closedPeriods.filter((cp) => selectedPeriods.has(cp.key)),
+        }
+      }
+
+      // Usar mergeLocal para hacer la fusión
+      await cloud.mergeLocal(activeProfileId, selectedCompanyId, "cloud")
+
+      if (deleteAfterMerge) {
+        // Marcar para eliminar después si se configuró
+        onNotify(`Empresas fusionadas. Ahora puedes eliminar la copia local si lo deseas.`)
+      } else {
+        onNotify(`Empresas fusionadas exitosamente`)
+      }
+      onClose()
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : "No se pudo fusionar", "danger")
+      setBusy(false)
+    }
+  }
+
+  const company = cloud.companies.find((c: any) => c.id === selectedCompanyId)
+
+  return (
+    <Modal
+      title="Fusionar empresas"
+      subtitle={`Pasar datos seleccionados a «${company?.name || "Sin nombre"}»`}
+      onClose={busy ? () => {} : onClose}
+      width="max-w-md"
+      footer={
+        <>
+          <Button onClick={onClose} disabled={busy} className="flex-1">
+            Cancelar
+          </Button>
+          <Button
+            variant="primary"
+            className="flex-1"
+            disabled={busy || !selectedCompanyId}
+            onClick={handleMerge}
+          >
+            {busy ? "Fusionando…" : "Fusionar"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4 text-sm text-muted leading-relaxed">
+        <Field label="Empresa de la nube">
+          <select
+            value={selectedCompanyId}
+            onChange={(e) => onCompanyChange(e.target.value)}
+            disabled={busy}
+            className={inputClass}
+          >
+            <option value="">Selecciona una empresa...</option>
+            {cloud.companies.map((c: any) => (
+              <option key={c.id} value={c.id}>
+                {c.name || "Sin nombre"}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        {selectedCompanyId && data.closedPeriods.length > 0 && (
+          <div className="space-y-2">
+            <div className="text-xs font-semibold text-fg">Quincenas a fusionar (opcionales)</div>
+            <div className="border border-line rounded-2xl divide-y divide-line max-h-48 overflow-y-auto">
+              {data.closedPeriods.map((period) => {
+                const isSelected = selectedPeriods.has(period.key)
+                return (
+                  <label
+                    key={period.key}
+                    className="flex items-center gap-3 px-3.5 py-2.5 hover:bg-raised cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={(e) => {
+                        const newPeriods = new Set(selectedPeriods)
+                        if (e.target.checked) {
+                          newPeriods.add(period.key)
+                        } else {
+                          newPeriods.delete(period.key)
+                        }
+                        onPeriodsChange(newPeriods)
+                      }}
+                      disabled={busy}
+                      className="w-4 h-4"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-semibold text-fg">
+                        {MONTHS_ES[period.period.month - 1]} {period.period.year} · Q{period.period.half}
+                      </div>
+                      <div className="text-xs text-muted">
+                        {period.summaries.length} colaboradores
+                      </div>
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+            <p className="text-[11px] text-muted">
+              Si no seleccionas ninguna, se fusionarán todos los colaboradores y registros abiertos.
+            </p>
+          </div>
+        )}
+
+        <div className="border border-line rounded-2xl p-3.5">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={deleteAfterMerge}
+              onChange={(e) => onDeleteChange(e.target.checked)}
+              disabled={busy}
+              className="mt-1"
+            />
+            <span className="text-xs">
+              <strong className="text-fg">Eliminar copia local después</strong> de la fusión. Sin
+              esto, esta empresa quedará vinculada a la nube y se sincronizará automáticamente.
+            </span>
+          </label>
+        </div>
+
+        {previewError ? (
+          <p className="text-xs text-danger font-semibold">{previewError}</p>
+        ) : (
+          <p className="text-xs text-muted">
+            {preview ? `Se fusionarán ${preview.newEmployees} colaboradores nuevos` : "Cargando vista previa…"}
+          </p>
+        )}
+      </div>
+    </Modal>
   )
 }
