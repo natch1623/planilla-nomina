@@ -230,33 +230,31 @@ export default function Configuracion({
       {cloudPanel}
 
       {/* Fusión manual */}
-      {cloud?.companies && cloud.companies.length > 0 && (
-        <Card>
-          <CardHeader
-            title="Fusionar empresas"
-            subtitle="Pasar quincenas seleccionadas del local a la nube manualmente"
+      <Card>
+        <CardHeader
+          title="Fusionar empresas"
+          subtitle="Combina dos empresas: local + local, local + nube, o nube + nube"
+        />
+        <div className="space-y-2.5">
+          <DataRow
+            title="Fusionar dos empresas"
+            desc="Selecciona qué quincenas pasar y elige si conservar o eliminar la empresa de origen"
+            action={
+              <Button
+                icon="cloud"
+                onClick={() => {
+                  setMergeDialog(true)
+                  setSelectedCompanyId("")
+                  setSelectedPeriods(new Set())
+                  setDeleteAfterMerge(false)
+                }}
+              >
+                Fusionar
+              </Button>
+            }
           />
-          <div className="space-y-2.5">
-            <DataRow
-              title="Fusionar con la nube"
-              desc="Elige una empresa de la nube y qué quincenas pasar, luego decide si conservar o eliminar la copia local"
-              action={
-                <Button
-                  icon="cloud"
-                  onClick={() => {
-                    setMergeDialog(true)
-                    setSelectedCompanyId(cloud.companies[0]?.id ?? "")
-                    setSelectedPeriods(new Set())
-                    setDeleteAfterMerge(false)
-                  }}
-                >
-                  Fusionar
-                </Button>
-              }
-            />
-          </div>
-        </Card>
-      )}
+        </div>
+      </Card>
 
       {/* Reglas de cálculo */}
       <Card>
@@ -644,6 +642,7 @@ export default function Configuracion({
           cloud={cloud}
           data={data}
           activeProfileId={activeProfileId}
+          profiles={profiles}
           selectedCompanyId={selectedCompanyId}
           selectedPeriods={selectedPeriods}
           deleteAfterMerge={deleteAfterMerge}
@@ -740,6 +739,7 @@ interface ManualMergeDialogProps {
   cloud: any
   data: AppData
   activeProfileId: string
+  profiles: ProfileMeta[]
   selectedCompanyId: string
   selectedPeriods: Set<string>
   deleteAfterMerge: boolean
@@ -754,6 +754,7 @@ function ManualMergeDialog({
   cloud,
   data,
   activeProfileId,
+  profiles,
   selectedCompanyId,
   selectedPeriods,
   deleteAfterMerge,
@@ -764,44 +765,19 @@ function ManualMergeDialog({
   onNotify,
 }: ManualMergeDialogProps) {
   const [busy, setBusy] = useState(false)
-  const [preview, setPreview] = useState<any>(null)
-  const [previewError, setPreviewError] = useState("")
-
-  useEffect(() => {
-    if (!selectedCompanyId) return
-    let alive = true
-    setPreview(null)
-    setPreviewError("")
-    cloud
-      .previewMerge(activeProfileId, selectedCompanyId)
-      .then((p: any) => alive && setPreview(p))
-      .catch((err: Error) => alive && setPreviewError(err instanceof Error ? err.message : String(err)))
-    return () => {
-      alive = false
-    }
-  }, [activeProfileId, selectedCompanyId, cloud])
+  const [sourceProfileId, setSourceProfileId] = useState("")
 
   async function handleMerge() {
     setBusy(true)
     try {
-      // Crear una copia de los datos local con solo las quincenas seleccionadas
-      let dataToMerge = data
-      if (selectedPeriods.size > 0) {
-        // Filtrar closedPeriods para incluir solo las seleccionadas
-        dataToMerge = {
-          ...data,
-          closedPeriods: data.closedPeriods.filter((cp) => selectedPeriods.has(cp.key)),
-        }
-      }
-
-      // Usar mergeLocal para hacer la fusión
-      await cloud.mergeLocal(activeProfileId, selectedCompanyId, "cloud")
-
-      if (deleteAfterMerge) {
-        // Marcar para eliminar después si se configuró
-        onNotify(`Empresas fusionadas. Ahora puedes eliminar la copia local si lo deseas.`)
-      } else {
+      // Si origen es local y destino es nube: usar mergeLocal
+      if (sourceProfileId && !sourceProfileId.startsWith("cloud-") && selectedCompanyId.startsWith("cloud-")) {
+        const cloudCompanyId = selectedCompanyId.replace("cloud-", "")
+        await cloud.mergeLocal(sourceProfileId, cloudCompanyId, "cloud")
         onNotify(`Empresas fusionadas exitosamente`)
+      } else {
+        // Para otros casos de fusión local-local, aquí se podría agregar lógica adicional
+        onNotify(`Tipo de fusión aún no implementado en este contexto`, "amber")
       }
       onClose()
     } catch (err) {
@@ -810,12 +786,19 @@ function ManualMergeDialog({
     }
   }
 
-  const company = cloud.companies.find((c: any) => c.id === selectedCompanyId)
+  // Preparar opciones de empresas (locales + nube)
+  const localProfiles = profiles.filter((p) => p.id !== activeProfileId)
+  const cloudCompanies = cloud?.companies || []
+
+  const sourceProfile = profiles.find((p) => p.id === sourceProfileId)
+  const destCompany = selectedCompanyId.startsWith("cloud-")
+    ? cloudCompanies.find((c: any) => c.id === selectedCompanyId.replace("cloud-", ""))
+    : profiles.find((p) => p.id === selectedCompanyId)
 
   return (
     <Modal
       title="Fusionar empresas"
-      subtitle={`Pasar datos seleccionados a «${company?.name || "Sin nombre"}»`}
+      subtitle="Elige la empresa de origen y la de destino"
       onClose={busy ? () => {} : onClose}
       width="max-w-md"
       footer={
@@ -826,7 +809,7 @@ function ManualMergeDialog({
           <Button
             variant="primary"
             className="flex-1"
-            disabled={busy || !selectedCompanyId}
+            disabled={busy || !sourceProfileId || !selectedCompanyId || sourceProfileId === selectedCompanyId}
             onClick={handleMerge}
           >
             {busy ? "Fusionando…" : "Fusionar"}
@@ -835,25 +818,65 @@ function ManualMergeDialog({
       }
     >
       <div className="space-y-4 text-sm text-muted leading-relaxed">
-        <Field label="Empresa de la nube">
+        <Field label="Empresa de origen">
+          <select
+            value={sourceProfileId}
+            onChange={(e) => setSourceProfileId(e.target.value)}
+            disabled={busy}
+            className={inputClass}
+          >
+            <option value="">Selecciona de dónde traer datos...</option>
+            <optgroup label="Empresas locales">
+              {localProfiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {profileLabel(p)}
+                </option>
+              ))}
+            </optgroup>
+            {cloudCompanies.length > 0 && (
+              <optgroup label="Empresas en la nube">
+                {cloudCompanies.map((c: any) => (
+                  <option key={`cloud-${c.id}`} value={`cloud-${c.id}`}>
+                    {c.name || "Sin nombre"}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </Field>
+
+        <Field label="Empresa de destino">
           <select
             value={selectedCompanyId}
             onChange={(e) => onCompanyChange(e.target.value)}
             disabled={busy}
             className={inputClass}
           >
-            <option value="">Selecciona una empresa...</option>
-            {cloud.companies.map((c: any) => (
-              <option key={c.id} value={c.id}>
-                {c.name || "Sin nombre"}
-              </option>
-            ))}
+            <option value="">Selecciona a dónde llevar datos...</option>
+            <optgroup label="Empresas locales">
+              {profiles
+                .filter((p) => p.id !== sourceProfileId)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {profileLabel(p)}
+                  </option>
+                ))}
+            </optgroup>
+            {cloudCompanies.length > 0 && (
+              <optgroup label="Empresas en la nube">
+                {cloudCompanies.map((c: any) => (
+                  <option key={`cloud-${c.id}`} value={`cloud-${c.id}`}>
+                    {c.name || "Sin nombre"}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </Field>
 
-        {selectedCompanyId && data.closedPeriods.length > 0 && (
+        {sourceProfileId && data.closedPeriods.length > 0 && (
           <div className="space-y-2">
-            <div className="text-xs font-semibold text-fg">Quincenas a fusionar (opcionales)</div>
+            <div className="text-xs font-semibold text-fg">Quincenas a pasar (opcionales)</div>
             <div className="border border-line rounded-2xl divide-y divide-line max-h-48 overflow-y-auto">
               {data.closedPeriods.map((period) => {
                 const isSelected = selectedPeriods.has(period.key)
@@ -890,7 +913,7 @@ function ManualMergeDialog({
               })}
             </div>
             <p className="text-[11px] text-muted">
-              Si no seleccionas ninguna, se fusionarán todos los colaboradores y registros abiertos.
+              Si no seleccionas ninguna, se pasarán todos los colaboradores y registros abiertos.
             </p>
           </div>
         )}
@@ -905,19 +928,16 @@ function ManualMergeDialog({
               className="mt-1"
             />
             <span className="text-xs">
-              <strong className="text-fg">Eliminar copia local después</strong> de la fusión. Sin
-              esto, esta empresa quedará vinculada a la nube y se sincronizará automáticamente.
+              <strong className="text-fg">Eliminar empresa de origen</strong> después de fusionar.
+              Sin esto, la empresa se conserva con solo los datos que no se movieron.
             </span>
           </label>
         </div>
 
-        {previewError ? (
-          <p className="text-xs text-danger font-semibold">{previewError}</p>
-        ) : (
-          <p className="text-xs text-muted">
-            {preview ? `Se fusionarán ${preview.newEmployees} colaboradores nuevos` : "Cargando vista previa…"}
-          </p>
-        )}
+        <p className="text-xs text-muted">
+          Los datos de origen se agregarán a la empresa de destino. La configuración (tarifas, horarios,
+          nombre) queda la del destino.
+        </p>
       </div>
     </Modal>
   )
