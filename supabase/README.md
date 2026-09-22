@@ -78,22 +78,38 @@ VITE_SUPABASE_ANON_KEY=eyJ...
 | Editor | Ve y modifica todos los datos |
 | Solo lectura | Ve todo, no modifica nada |
 | Asistencia | Solo el Registro Diario: anota horas, feriados, vacaciones, incapacidades. Recibe los colaboradores **sin** tarifas, salarios ni cédula y no ve montos. No puede tocar días de quincenas cerradas |
-| Costos | Solo la lista de costos: registra y edita pagos, con sus beneficiarios frecuentes y las encargadas de turno. La nube nunca le envía salarios, registro diario ni el resto de la empresa. |
+| Caja | Solo la pestaña Caja: registra y edita cobros y pagos, con sus empresas o personas frecuentes, las encargadas de turno y los arqueos de caja. La nube nunca le envía salarios, registro diario ni el resto de la empresa. |
 
-### Costos: la cuenta de nube y el PIN de turno
+### Caja: la cuenta de nube y el PIN de turno
 
-En Costos hay dos identidades y no son lo mismo:
+En Caja hay dos identidades y no son lo mismo:
 
 - **La cuenta de nube** (por ejemplo `caja`) identifica la **computadora**:
-  dice qué estación puede sincronizar los pagos. Es la que aparece en «último
-  guardado de…».
+  dice qué estación puede sincronizar los movimientos. Es la que aparece en
+  «último guardado de…».
 - **El PIN de turno** identifica a la **persona**: cada encargada entra con su
-  nombre y su PIN, y eso es lo que queda en cada pago como quién lo procesó.
+  nombre y su PIN, y eso es lo que queda en cada cobro o pago como quién lo
+  procesó.
 
 Varias encargadas comparten la misma cuenta de nube en una estación. Sus
 perfiles y PIN sí se sincronizan, así que las mismas personas pueden trabajar
 en cualquier computadora. El PIN se guarda cifrado: ni la nube ni el navegador
 conservan el número.
+
+### Caja: arqueos de turno
+
+- **Al iniciar turno** la app pregunta cuánto efectivo hay en caja. Es
+  opcional: se puede omitir o cerrar la ventana.
+- **Al cerrar turno** el efectivo en caja es obligatorio y los detalles
+  (faltantes, sobrantes, pendientes) son opcionales. La ventana muestra el
+  balance del día y cuánto debería haber en caja, y permite imprimir solo el
+  turno de la encargada.
+- Los arqueos viajan con la sección Caja (`costCashCounts`), así que se ven
+  desde cualquier computadora con acceso a la empresa. Requieren haber corrido
+  la versión de `schema.sql` que los incluye.
+
+Internamente la sección y el rango se siguen llamando `costos`: cambiarlo
+rompería las cuentas que ya tienen ese rango asignado.
 
 Para cambiar el rango de alguien, elige el nuevo en la lista junto a su nombre.
 
@@ -113,8 +129,8 @@ combina:
 | `sections` | Secciones sueltas que ve y edita: `{asistencia}`, `{costos}` o `{asistencia,costos}` |
 | `sort` | Orden en la lista |
 
-Ejemplo: alguien que registra horas **y** pagos, sin ver salarios → **Insert
-row** con `role = asistencia_costos`, `label = Asistencia y costos`,
+Ejemplo: alguien que registra horas **y** movimientos de caja, sin ver
+salarios → **Insert row** con `role = asistencia_costos`, `label = Asistencia y caja`,
 `sections = {asistencia,costos}` y lo demás en `false`. Aparece solo en la
 app; no hay que tocar código.
 
