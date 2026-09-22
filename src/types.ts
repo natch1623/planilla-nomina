@@ -110,6 +110,7 @@ export interface AppData {
   costs: CostEntry[]
   costTemplates: CostTemplate[]
   costOperators: CostOperator[]
+  costCashCounts: CostCashCount[]
   /** Dinero en caja/banco al inicio, antes del primer movimiento registrado. */
   openingBalance: number
   openingBalanceDate: string // YYYY-MM-DD ('' = sin fecha declarada)
@@ -235,36 +236,39 @@ export interface FinancialGoal {
   createdAt: string // YYYY-MM-DD
 }
 
-export type CostRecipientKind = "empresa" | "persona"
+/** Cobro: entra efectivo a caja. Pago: sale. */
+export type CostMovementKind = "cobro" | "pago"
 
 /**
- * Pago a una empresa o persona fuera de la planilla: proveedores puntuales,
- * consultores, trámites, etc. Vive aparte de `Transaction` porque nace de un
- * registro más simple (un renglón por pago, sin estado pendiente/pagado ni
- * recurrencia) y necesita quién lo procesó, algo que un movimiento contable
- * no registra.
+ * Movimiento de efectivo en caja: un cobro o un pago a una empresa o
+ * persona, fuera de la planilla. Vive aparte de `Transaction` porque nace de
+ * un registro más simple (un renglón por movimiento, sin estado
+ * pendiente/pagado ni recurrencia) y necesita quién lo procesó, algo que un
+ * movimiento contable no registra.
  */
 export interface CostEntry {
   id: string
   date: string // YYYY-MM-DD
-  recipientName: string // a quién se le pagó
-  recipientKind: CostRecipientKind
+  recipientName: string // a quién se le pagó o quién pagó
+  /** Los registros anteriores a este campo eran todos pagos. */
+  kind: CostMovementKind
   taxId: string // RUC / cédula
-  concept: string // de qué es el pago
+  concept: string // de qué es el movimiento
   quantity: number // unidades o cantidad del bien/servicio
-  amount: number // monto pagado en USD
+  amount: number // monto en USD, siempre positivo; el signo lo da `kind`
   comment: string
   processedBy: string // encargada/o que procesó el pago
+  /** Cuándo se registró (ISO); '' en pagos anteriores a este campo. */
+  createdAt: string
 }
 
 /**
- * Perfil guardado de un beneficiario recurrente (empresa o persona a la que
- * se le paga seguido), para no volver a teclear su nombre y RUC en cada pago.
+ * Perfil guardado de una empresa o persona frecuente, para no volver a
+ * teclear su nombre y RUC en cada movimiento.
  */
 export interface CostTemplate {
   id: string
   recipientName: string
-  recipientKind: CostRecipientKind
   taxId: string
 }
 
@@ -279,6 +283,22 @@ export interface CostOperator {
   name: string
   /** Huella SHA-256 del PIN de 4 dígitos (ver hashPin en utils/costs.ts) — nunca el PIN en claro. */
   pin: string
+}
+
+export type CostCashCountKind = "apertura" | "cierre"
+
+/**
+ * Arqueo de caja de una encargada: cuánto efectivo había al abrir su turno
+ * (opcional) y cuánto quedó al cerrarlo, para poder cuadrar las cuentas
+ * contra los pagos registrados en medio.
+ */
+export interface CostCashCount {
+  id: string
+  kind: CostCashCountKind
+  operatorName: string
+  at: string // ISO timestamp
+  cashOnHand: number // efectivo en caja, en USD
+  notes: string
 }
 
 /** Conteo de días por tipo dentro del período. */

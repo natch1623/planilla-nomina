@@ -55,7 +55,7 @@ insert into public.roles (role, label, description, reads_all, writes_all, manag
   ('editor',     'Editor',        'Ve y modifica todos los datos.',                                                true,  true,  false, '{}',             20),
   ('viewer',     'Solo lectura',  'Ve todo, no modifica nada.',                                                    true,  false, false, '{}',             30),
   ('asistencia', 'Asistencia',    'Registra horas en el Registro Diario. No ve salarios, tarifas ni montos.',      false, false, false, '{asistencia}',   40),
-  ('costos',     'Costos',        'Registra y edita pagos en Costos. No ve salarios, registro diario ni dashboard.', false, false, false, '{costos}',       50)
+  ('costos',     'Caja',          'Registra cobros y pagos en Caja. No ve salarios, registro diario ni dashboard.', false, false, false, '{costos}',       50)
 on conflict (role) do update set
   label = excluded.label, description = excluded.description,
   reads_all = excluded.reads_all, writes_all = excluded.writes_all,
@@ -298,7 +298,9 @@ returns jsonb language sql immutable as $$
       'costTemplates', coalesce(p_data -> 'costTemplates', '[]'),
       -- Encargadas con PIN: viajan para que las mismas personas puedan
       -- registrar pagos desde cualquier estación.
-      'costOperators', coalesce(p_data -> 'costOperators', '[]'))
+      'costOperators', coalesce(p_data -> 'costOperators', '[]'),
+      -- Arqueos de caja al abrir y cerrar turno: efectivo y notas.
+      'costCashCounts', coalesce(p_data -> 'costCashCounts', '[]'))
   end
 $$;
 
@@ -362,6 +364,9 @@ begin
     end if;
     if jsonb_typeof(p_payload -> 'costOperators') = 'array' then
       v_data := jsonb_set(v_data, '{costOperators}', p_payload -> 'costOperators', true);
+    end if;
+    if jsonb_typeof(p_payload -> 'costCashCounts') = 'array' then
+      v_data := jsonb_set(v_data, '{costCashCounts}', p_payload -> 'costCashCounts', true);
     end if;
 
   else

@@ -88,3 +88,21 @@ export function todayISO(): string {
   const d = String(now.getDate()).padStart(2, "0")
   return `${y}-${m}-${d}`
 }
+
+/** Fecha local (YYYY-MM-DD) de un timestamp ISO, comparable con las fechas de registros. */
+export function localDay(iso: string): string {
+  const d = new Date(iso)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+/** "22 sep 2026, 11:21 a. m." a partir de un timestamp ISO. */
+export function formatDateTime(iso: string): string {
+  const time = new Date(iso).toLocaleTimeString("es-PA", {
+    hour: "numeric",
+    minute: "2-digit",
+  })
+  return `${formatDate(localDay(iso))}, ${time}`
+}

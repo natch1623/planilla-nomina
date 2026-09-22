@@ -493,7 +493,7 @@ export function MergeDialog({
         [preview.newClosedPeriods, "quincena cerrada", "quincenas cerradas"],
         [preview.newTransactions, "movimiento", "movimientos"],
         [preview.newLoans, "préstamo", "préstamos"],
-        [preview.newCosts, "pago de costos", "pagos de costos"],
+        [preview.newCosts, "movimiento de caja", "movimientos de caja"],
       ].filter(([n]) => (n as number) > 0)
     : []
   const shared = preview ? preview.updatedEmployees + preview.updatedEntries : 0

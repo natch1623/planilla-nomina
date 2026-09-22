@@ -1,18 +1,6 @@
 import type { CostEntry, CostTemplate } from "../types"
 import { monthKey } from "./accounting"
 
-/** Consultas comunes sugeridas; el usuario puede escribir cualquier otra. */
-export const DEFAULT_COST_CONCEPTS = [
-  "Materiales",
-  "Mantenimiento",
-  "Transporte",
-  "Trámite",
-  "Servicios profesionales",
-  "Consultoría",
-  "Suministros de oficina",
-  "Otros",
-]
-
 /**
  * Sugerencias para "a quién se le pagó": nombres ya guardados como plantilla
  * más cualquier beneficiario que aparezca en pagos anteriores, aunque nunca
@@ -34,20 +22,18 @@ export function recipientOptions(
 }
 
 /**
- * Sugerencias para "consulta": la lista predefinida más cualquier consulta
- * que ya se haya usado en un pago anterior.
+ * Suma de los pagos a terceros registrados en caja en un mes calendario
+ * dado. Los cobros de caja no entran: esto alimenta "Costos a terceros".
  */
-export function conceptOptions(costs: CostEntry[]): string[] {
-  const custom = costs.map((c) => c.concept.trim()).filter((c) => c.length > 0)
-  const set = new Set([...DEFAULT_COST_CONCEPTS, ...custom])
-  return [...set].sort((a, b) => a.localeCompare(b, "es"))
-}
-
-/** Suma de los pagos a terceros registrados en un mes calendario dado. */
 export function costsMonthTotal(costs: CostEntry[], key: string): number {
   return costs
-    .filter((c) => monthKey(c.date) === key)
+    .filter((c) => c.kind === "pago" && monthKey(c.date) === key)
     .reduce((a, c) => a + c.amount, 0)
+}
+
+/** Efecto de un movimiento sobre el efectivo en caja: + si es cobro, − si es pago. */
+export function signedAmount(c: CostEntry): number {
+  return c.kind === "cobro" ? c.amount : -c.amount
 }
 
 /**

@@ -163,7 +163,7 @@ export default function EstadoResultados({ data, rules }: Props) {
             {costosTerceros > 0 || costosTercerosPrev > 0 ? (
               <Line
                 label="Costos a terceros"
-                hint="Pagos a empresas y personas registrados en Costos"
+                hint="Pagos registrados en Caja"
                 amount={-costosTerceros}
                 previous={-costosTercerosPrev}
                 tone="danger"
@@ -212,7 +212,7 @@ export default function EstadoResultados({ data, rules }: Props) {
           {costosTerceros > 0 && (
             <p className="flex items-start gap-1.5 text-[11px] text-subtle mt-4 pt-4 border-t border-line">
               <Icon name="alert" className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              Los pagos a terceros se registran una sola vez, en Costos: evita
+              Los pagos a terceros se registran una sola vez, en Caja: evita
               anotarlos también como gasto en Movimientos para no contarlos
               dos veces.
             </p>

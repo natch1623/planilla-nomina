@@ -5,7 +5,7 @@ import type {
   ClosedPeriod,
   CostEntry,
   CostOperator,
-  CostRecipientKind,
+  CostCashCount,
   CostTemplate,
   Counterparty,
   CounterpartyKind,
@@ -62,6 +62,7 @@ export const defaultData: AppData = {
   costs: [],
   costTemplates: [],
   costOperators: [],
+  costCashCounts: [],
   openingBalance: 0,
   openingBalanceDate: "",
   accountingEnabled: true,
@@ -404,8 +405,6 @@ function normalizeGoal(raw: any): FinancialGoal | null {
   }
 }
 
-const COST_RECIPIENT_KINDS: CostRecipientKind[] = ["empresa", "persona"]
-
 function normalizeCostEntry(raw: any): CostEntry | null {
   if (!raw || typeof raw !== "object") return null
   const recipientName = str(raw.recipientName).trim()
@@ -418,15 +417,16 @@ function normalizeCostEntry(raw: any): CostEntry | null {
     id: str(raw.id) || crypto.randomUUID(),
     date,
     recipientName,
-    recipientKind: COST_RECIPIENT_KINDS.includes(raw.recipientKind)
-      ? raw.recipientKind
-      : "empresa",
+    // Antes de existir los cobros todo registro era un pago (y traía
+    // `recipientKind: empresa|persona`, que ya no se usa).
+    kind: raw.kind === "cobro" ? "cobro" : "pago",
     taxId: str(raw.taxId),
     concept: str(raw.concept),
     quantity: Math.max(0, num(raw.quantity, 1)),
     amount,
     comment: str(raw.comment),
     processedBy: str(raw.processedBy),
+    createdAt: Number.isNaN(Date.parse(str(raw.createdAt))) ? "" : str(raw.createdAt),
   }
 }
 
@@ -437,9 +437,6 @@ function normalizeCostTemplate(raw: any): CostTemplate | null {
   return {
     id: str(raw.id) || crypto.randomUUID(),
     recipientName,
-    recipientKind: COST_RECIPIENT_KINDS.includes(raw.recipientKind)
-      ? raw.recipientKind
-      : "empresa",
     taxId: str(raw.taxId),
   }
 }
@@ -458,6 +455,20 @@ function normalizeCostOperator(raw: any): CostOperator | null {
     id: str(raw.id) || crypto.randomUUID(),
     name,
     pin,
+  }
+}
+
+function normalizeCostCashCount(raw: any): CostCashCount | null {
+  if (!raw || typeof raw !== "object") return null
+  const at = str(raw.at)
+  if (!at || Number.isNaN(Date.parse(at))) return null
+  return {
+    id: str(raw.id) || crypto.randomUUID(),
+    kind: raw.kind === "apertura" ? "apertura" : "cierre",
+    operatorName: str(raw.operatorName).trim(),
+    at,
+    cashOnHand: Math.max(0, num(raw.cashOnHand, 0)),
+    notes: str(raw.notes),
   }
 }
 
@@ -577,6 +588,12 @@ export function normalizeData(raw: any): AppData {
         .filter((o: CostOperator | null): o is CostOperator => o !== null)
     : []
 
+  const costCashCounts: CostCashCount[] = Array.isArray(raw.costCashCounts)
+    ? raw.costCashCounts
+        .map(normalizeCostCashCount)
+        .filter((s: CostCashCount | null): s is CostCashCount => s !== null)
+    : []
+
   const theme =
     raw.theme === "light" || raw.theme === "dark" ? raw.theme : "system"
 
@@ -600,6 +617,7 @@ export function normalizeData(raw: any): AppData {
     costs,
     costTemplates,
     costOperators,
+    costCashCounts,
     openingBalance: num(raw.openingBalance, 0),
     openingBalanceDate: DATE_RE.test(str(raw.openingBalanceDate))
       ? raw.openingBalanceDate
@@ -972,6 +990,11 @@ export function mergeAppData(
   const costs = mergeById(current.costs, incoming.costs, winner)
   const costTemplates = mergeById(current.costTemplates, incoming.costTemplates, winner)
   const costOperators = mergeById(current.costOperators, incoming.costOperators, winner)
+  const costCashCounts = mergeById(
+    current.costCashCounts,
+    incoming.costCashCounts,
+    winner,
+  )
 
   const data: AppData = {
     ...current,
@@ -987,6 +1010,7 @@ export function mergeAppData(
     costs: costs.merged,
     costTemplates: costTemplates.merged,
     costOperators: costOperators.merged,
+    costCashCounts: costCashCounts.merged,
   }
 
   const preview: MergePreview = {

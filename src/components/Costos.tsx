@@ -2,13 +2,16 @@ import { useMemo, useRef, useState } from "react"
 import type {
   AppData,
   CostEntry,
+  CostCashCount,
+  CostCashCountKind,
+  CostMovementKind,
   CostOperator,
-  CostRecipientKind,
   CostTemplate,
 } from "../types"
 import { fmt } from "../utils/calculations"
-import { conceptOptions, hashPin, recipientOptions } from "../utils/costs"
-import { formatDate, todayISO } from "../utils/dates"
+import { hashPin, recipientOptions, signedAmount } from "../utils/costs"
+import { formatDate, formatDateTime, localDay, todayISO } from "../utils/dates"
+import { exportCajaWorkbook, printCaja, printShift } from "../utils/exportCaja"
 import Icon from "./Icon"
 import {
   Button,
@@ -40,12 +43,26 @@ interface Props {
 
 type Draft = Omit<CostEntry, "id">
 
-const RECIPIENT_LABEL: Record<CostRecipientKind, string> = {
-  empresa: "Empresa",
-  persona: "Persona",
+const KIND_LABEL: Record<CostMovementKind, string> = {
+  cobro: "Cobro",
+  pago: "Pago",
 }
 
-type RecipientFilter = "todos" | CostRecipientKind
+const KIND_OPTIONS = [
+  { value: "cobro" as CostMovementKind, label: "Cobro" },
+  { value: "pago" as CostMovementKind, label: "Pago" },
+]
+
+type KindFilter = "todos" | CostMovementKind
+
+/** Monto con signo y color: los cobros suman a caja, los pagos restan. */
+function formatSigned(n: number): string {
+  return `${n < 0 ? "−" : "+"}$${fmt(Math.abs(n))}`
+}
+
+function signedTone(n: number): string {
+  return n < 0 ? "text-danger" : "text-ok"
+}
 
 /**
  * Quién tiene el turno abierto se guarda solo para esta pestaña (no para
@@ -55,19 +72,21 @@ type RecipientFilter = "todos" | CostRecipientKind
  * sessionStorage y no un simple estado de React.
  */
 const ACTIVE_OPERATOR_KEY = "costos_active_operator_id"
+/** Cuándo empezó el turno abierto: delimita qué se imprime como "mi turno". */
+const SHIFT_STARTED_KEY = "costos_shift_started_at"
 
-function readActiveOperatorId(): string {
+function readSession(key: string): string {
   try {
-    return sessionStorage.getItem(ACTIVE_OPERATOR_KEY) ?? ""
+    return sessionStorage.getItem(key) ?? ""
   } catch {
     return ""
   }
 }
 
-function writeActiveOperatorId(id: string) {
+function writeSession(key: string, value: string) {
   try {
-    if (id) sessionStorage.setItem(ACTIVE_OPERATOR_KEY, id)
-    else sessionStorage.removeItem(ACTIVE_OPERATOR_KEY)
+    if (value) sessionStorage.setItem(key, value)
+    else sessionStorage.removeItem(key)
   } catch {
     // Almacenamiento no disponible (modo privado, cuota llena…): no es crítico.
   }
@@ -76,8 +95,8 @@ function writeActiveOperatorId(id: string) {
 /**
  * Cuando lo escrito calza exactamente con una plantilla guardada (por
  * ejemplo al elegirla de la lista de autocompletar del navegador), se trae
- * también su tipo y RUC — igual que al tocar un chip de plantilla, pero sin
- * soltar el teclado.
+ * también su RUC — igual que al tocar un chip de plantilla, pero sin soltar
+ * el teclado.
  */
 function withRecipientName<T extends Draft>(
   prev: T,
@@ -88,25 +107,21 @@ function withRecipientName<T extends Draft>(
     (t) => t.recipientName.toLowerCase() === name.trim().toLowerCase(),
   )
   return match
-    ? {
-        ...prev,
-        recipientName: name,
-        recipientKind: match.recipientKind,
-        taxId: match.taxId,
-      }
+    ? { ...prev, recipientName: name, taxId: match.taxId }
     : { ...prev, recipientName: name }
 }
 
 const emptyCost = (): Draft => ({
   date: todayISO(),
   recipientName: "",
-  recipientKind: "empresa",
+  kind: "pago",
   taxId: "",
   concept: "",
   quantity: 1,
   amount: 0,
   comment: "",
   processedBy: "",
+  createdAt: "",
 })
 
 export default function Costos({
@@ -116,20 +131,27 @@ export default function Costos({
   onNotify,
 }: Props) {
   const [quick, setQuick] = useState<Draft>(emptyCost)
-  const [activeOperatorId, setActiveOperatorId] = useState(readActiveOperatorId)
+  const [activeOperatorId, setActiveOperatorId] = useState(() =>
+    readSession(ACTIVE_OPERATOR_KEY),
+  )
+  const [shiftStartedAt, setShiftStartedAt] = useState(() =>
+    readSession(SHIFT_STARTED_KEY),
+  )
   const [editing, setEditing] = useState<CostEntry | null>(null)
   const [form, setForm] = useState<Draft>(emptyCost())
   const [pendingDelete, setPendingDelete] = useState<CostEntry | null>(null)
   const [pendingDeleteOperator, setPendingDeleteOperator] =
     useState<CostOperator | null>(null)
-  const [recipientFilter, setRecipientFilter] =
-    useState<RecipientFilter>("todos")
+  const [closingShift, setClosingShift] = useState(false)
+  const [openingShift, setOpeningShift] = useState(false)
+  const [kindFilter, setKindFilter] = useState<KindFilter>("todos")
   const [query, setQuery] = useState("")
   const nameRef = useRef<HTMLInputElement>(null)
 
   const costs = data.costs
   const templates = data.costTemplates
   const operators = data.costOperators
+  const cashCounts = data.costCashCounts
   const activeOperator =
     operators.find((o) => o.id === activeOperatorId) ?? null
 
@@ -137,9 +159,7 @@ export default function Costos({
     const q = query.trim().toLowerCase()
     return [...costs]
       .sort((a, b) => b.date.localeCompare(a.date))
-      .filter(
-        (c) => recipientFilter === "todos" || c.recipientKind === recipientFilter,
-      )
+      .filter((c) => kindFilter === "todos" || c.kind === kindFilter)
       .filter((c) => {
         if (!q) return true
         return (
@@ -149,7 +169,7 @@ export default function Costos({
           c.processedBy.toLowerCase().includes(q)
         )
       })
-  }, [costs, recipientFilter, query])
+  }, [costs, kindFilter, query])
 
   // El orden de `filtered` ya es por fecha descendente, así que agrupar al
   // recorrerlo conserva ese orden entre grupos sin ordenar de nuevo.
@@ -164,7 +184,7 @@ export default function Costos({
   }, [filtered])
 
   const totalShown = useMemo(
-    () => filtered.reduce((a, c) => a + c.amount, 0),
+    () => filtered.reduce((a, c) => a + signedAmount(c), 0),
     [filtered],
   )
 
@@ -172,7 +192,46 @@ export default function Costos({
     () => recipientOptions(costs, templates),
     [costs, templates],
   )
-  const conceptSuggestions = useMemo(() => conceptOptions(costs), [costs])
+  const sortedCashCounts = useMemo(
+    () => [...cashCounts].sort((a, b) => b.at.localeCompare(a.at)),
+    [cashCounts],
+  )
+
+  // Si lo último que dejó esta encargada fue una apertura, es la de su turno
+  // actual: se muestra al cerrar para que tenga contra qué cuadrar.
+  const openingCount = activeOperator
+    ? sortedCashCounts.find((c) => c.operatorName === activeOperator.name)
+    : undefined
+  const currentOpening =
+    openingCount?.kind === "apertura" ? openingCount : undefined
+
+  // Lo mismo que muestra la tabla en el renglón de hoy, para el cierre.
+  const today = todayISO()
+  const todayBalance = costs
+    .filter((c) => c.date === today)
+    .reduce((a, c) => a + signedAmount(c), 0)
+  // Teórico en caja: con apertura propia se cuadra contra ella; si la
+  // encargada la omitió, contra la última apertura registrada hoy.
+  const baseOpening =
+    currentOpening ??
+    sortedCashCounts.find(
+      (c) => c.kind === "apertura" && localDay(c.at) === today,
+    )
+  const expectedCash = baseOpening
+    ? cashSinceOpening(costs, baseOpening)
+    : undefined
+
+  // Lo que registró esta encargada desde que inició el turno. Un turno
+  // abierto antes de guardar la hora de inicio cae a lo suyo de hoy.
+  const shiftEntries = activeOperator
+    ? costs.filter(
+        (c) =>
+          c.processedBy === activeOperator.name &&
+          (shiftStartedAt
+            ? c.createdAt >= shiftStartedAt
+            : c.date === today),
+      )
+    : []
 
   function openEdit(c: CostEntry) {
     setEditing(c)
@@ -191,12 +250,17 @@ export default function Costos({
     onChange({
       costs: [
         ...costs,
-        { ...quick, processedBy: activeOperator.name, id: crypto.randomUUID() },
+        {
+          ...quick,
+          processedBy: activeOperator.name,
+          createdAt: new Date().toISOString(),
+          id: crypto.randomUUID(),
+        },
       ],
     })
-    onNotify("Costo agregado")
-    // La fecha casi nunca cambia entre un pago y el siguiente durante el
-    // mismo turno: solo se limpia lo propio de cada pago.
+    onNotify(quick.kind === "cobro" ? "Cobro registrado" : "Pago registrado")
+    // La fecha casi nunca cambia entre un movimiento y el siguiente durante
+    // el mismo turno: solo se limpia lo propio de cada uno.
     setQuick((q) => ({ ...emptyCost(), date: q.date }))
     nameRef.current?.focus()
   }
@@ -209,8 +273,7 @@ export default function Costos({
     )
     if (existing) {
       if ((await hashPin(pin)) !== existing.pin) return "PIN incorrecto"
-      setActiveOperatorId(existing.id)
-      writeActiveOperatorId(existing.id)
+      startSession(existing.id)
       return null
     }
     if (!/^\d{4}$/.test(pin)) return "El PIN debe tener 4 dígitos"
@@ -220,20 +283,64 @@ export default function Costos({
       pin: await hashPin(pin),
     }
     onChange({ costOperators: [...operators, operator] })
-    setActiveOperatorId(operator.id)
-    writeActiveOperatorId(operator.id)
+    startSession(operator.id)
     return null
   }
 
-  function logout() {
+  function startSession(operatorId: string) {
+    const startedAt = new Date().toISOString()
+    setActiveOperatorId(operatorId)
+    writeSession(ACTIVE_OPERATOR_KEY, operatorId)
+    setShiftStartedAt(startedAt)
+    writeSession(SHIFT_STARTED_KEY, startedAt)
+    setOpeningShift(true)
+  }
+
+  function endSession() {
     setActiveOperatorId("")
-    writeActiveOperatorId("")
+    writeSession(ACTIVE_OPERATOR_KEY, "")
+    setShiftStartedAt("")
+    writeSession(SHIFT_STARTED_KEY, "")
+    setOpeningShift(false)
+  }
+
+  function recordCashCount(
+    kind: CostCashCountKind,
+    cashOnHand: number,
+    notes: string,
+  ) {
+    if (!activeOperator) return
+    onChange({
+      costCashCounts: [
+        ...cashCounts,
+        {
+          id: crypto.randomUUID(),
+          kind,
+          operatorName: activeOperator.name,
+          at: new Date().toISOString(),
+          cashOnHand,
+          notes: notes.trim(),
+        },
+      ],
+    })
+  }
+
+  function openShift(cashOnHand: number) {
+    recordCashCount("apertura", cashOnHand, "")
+    setOpeningShift(false)
+    onNotify("Efectivo inicial registrado")
+  }
+
+  function closeShift(cashOnHand: number, notes: string) {
+    recordCashCount("cierre", cashOnHand, notes)
+    setClosingShift(false)
+    endSession()
     onNotify("Turno cerrado")
   }
 
   function deleteOperator(id: string) {
     onChange({ costOperators: operators.filter((o) => o.id !== id) })
-    if (activeOperatorId === id) logout()
+    if (activeOperatorId === id) endSession()
   }
 
   function confirmDeleteOperator() {
@@ -249,14 +356,14 @@ export default function Costos({
     onChange({
       costs: costs.map((c) => (c.id === editing.id ? { ...c, ...form } : c)),
     })
-    onNotify("Costo actualizado")
+    onNotify("Movimiento actualizado")
     setEditing(null)
   }
 
   function confirmDelete() {
     if (!pendingDelete) return
     onChange({ costs: costs.filter((c) => c.id !== pendingDelete.id) })
-    onNotify("Costo eliminado", "danger")
+    onNotify("Movimiento eliminado", "danger")
     setPendingDelete(null)
   }
 
@@ -265,9 +372,7 @@ export default function Costos({
    * como plantilla" sobre un beneficiario ya guardado actualice su RUC en
    * vez de duplicarlo.
    */
-  function saveTemplate(
-    t: Pick<CostTemplate, "recipientName" | "recipientKind" | "taxId">,
-  ) {
+  function saveTemplate(t: Pick<CostTemplate, "recipientName" | "taxId">) {
     const name = t.recipientName.trim()
     if (!name) return
     const existing = templates.find(
@@ -276,9 +381,7 @@ export default function Costos({
     if (existing) {
       onChange({
         costTemplates: templates.map((x) =>
-          x.id === existing.id
-            ? { ...x, recipientKind: t.recipientKind, taxId: t.taxId }
-            : x,
+          x.id === existing.id ? { ...x, taxId: t.taxId } : x,
         ),
       })
     } else {
@@ -299,8 +402,8 @@ export default function Costos({
   return (
     <div className="space-y-5">
       <SectionTitle
-        title="Costos"
-        subtitle="Pagos a empresas y personas fuera de la planilla"
+        title="Caja"
+        subtitle="Movimientos en caja"
       />
 
       {!activeOperator ? (
@@ -316,7 +419,12 @@ export default function Costos({
               <Icon name="unlock" className="w-4 h-4 text-ok shrink-0" />
               Turno activo: {activeOperator.name}
             </span>
-            <Button size="sm" variant="ghost" icon="lock" onClick={logout}>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="lock"
+              onClick={() => setClosingShift(true)}
+            >
               Cerrar turno
             </Button>
           </div>
@@ -327,7 +435,6 @@ export default function Costos({
             setQuick={setQuick}
             templates={templates}
             recipientSuggestions={recipientSuggestions}
-            conceptSuggestions={conceptSuggestions}
             onAdd={handleQuickAdd}
             onSaveTemplate={saveTemplate}
             onDeleteTemplate={deleteTemplate}
@@ -337,15 +444,35 @@ export default function Costos({
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <Segmented
-          value={recipientFilter}
-          onChange={setRecipientFilter}
+          value={kindFilter}
+          onChange={setKindFilter}
           size="sm"
           options={[
-            { value: "todos" as RecipientFilter, label: "Todos" },
-            { value: "empresa" as RecipientFilter, label: "Empresas" },
-            { value: "persona" as RecipientFilter, label: "Personas" },
+            { value: "todos" as KindFilter, label: "Todos" },
+            { value: "cobro" as KindFilter, label: "Cobros" },
+            { value: "pago" as KindFilter, label: "Pagos" },
           ]}
         />
+        {filtered.length > 0 && (
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              icon="document"
+              onClick={() => printCaja(filtered, cashCounts, data.companyName)}
+            >
+              Imprimir
+            </Button>
+            <Button
+              size="sm"
+              icon="download"
+              onClick={() =>
+                exportCajaWorkbook(filtered, cashCounts, data.companyName)
+              }
+            >
+              Excel
+            </Button>
+          </div>
+        )}
         {costs.length > 4 && (
           <div className="relative max-w-sm flex-1 min-w-[220px]">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle">
@@ -355,7 +482,7 @@ export default function Costos({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Buscar por nombre, RUC, consulta o encargada"
-              aria-label="Buscar costos"
+              aria-label="Buscar movimientos"
               className={`${inputClass} pl-9`}
             />
           </div>
@@ -367,12 +494,12 @@ export default function Costos({
           icon="building"
           title={
             costs.length === 0
-              ? "Sin costos registrados"
-              : "Ningún costo coincide con el filtro"
+              ? "Sin movimientos registrados"
+              : "Ningún movimiento coincide con el filtro"
           }
           message={
             costs.length === 0
-              ? "Usa el formulario de arriba para registrar el primer pago."
+              ? "Usa el formulario de arriba para registrar el primer cobro o pago."
               : "Prueba con otros filtros o limpia la búsqueda."
           }
         />
@@ -382,7 +509,7 @@ export default function Costos({
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-raised">
-                  {["A quién", "RUC", "Consulta", "Cant.", "Total", "Encargada", ""].map(
+                  {["Nombre", "RUC", "Consulta", "Cant.", "Total", "Encargada", ""].map(
                     (h, i) => (
                       <th
                         key={h || i}
@@ -398,7 +525,10 @@ export default function Costos({
                 </tr>
               </thead>
               {groups.map(([date, entries]) => {
-                const groupTotal = entries.reduce((a, c) => a + c.amount, 0)
+                const groupTotal = entries.reduce(
+                  (a, c) => a + signedAmount(c),
+                  0,
+                )
                 return (
                   <tbody key={date} className="border-t border-line">
                     <tr className="bg-sunken">
@@ -408,11 +538,13 @@ export default function Costos({
                             {formatDate(date)}{" "}
                             <span className="text-subtle font-normal">
                               · {entries.length}{" "}
-                              {entries.length === 1 ? "pago" : "pagos"}
+                              {entries.length === 1 ? "movimiento" : "movimientos"}
                             </span>
                           </span>
-                          <span className="text-xs font-bold text-danger whitespace-nowrap">
-                            Balance diario −${fmt(groupTotal)}
+                          <span
+                            className={`text-xs font-bold whitespace-nowrap ${signedTone(groupTotal)}`}
+                          >
+                            Balance diario {formatSigned(groupTotal)}
                           </span>
                         </div>
                       </td>
@@ -427,7 +559,7 @@ export default function Costos({
                             {c.recipientName}
                           </span>
                           <span className="block text-[11px] text-subtle">
-                            {RECIPIENT_LABEL[c.recipientKind]}
+                            {KIND_LABEL[c.kind]}
                           </span>
                         </td>
                         <td className="px-3 py-2.5 text-muted whitespace-nowrap">
@@ -446,8 +578,10 @@ export default function Costos({
                         <td className="px-3 py-2.5 text-muted whitespace-nowrap num">
                           {c.quantity}
                         </td>
-                        <td className="px-3 py-2.5 text-right num font-bold whitespace-nowrap text-danger">
-                          −${fmt(c.amount)}
+                        <td
+                          className={`px-3 py-2.5 text-right num font-bold whitespace-nowrap ${signedTone(signedAmount(c))}`}
+                        >
+                          {formatSigned(signedAmount(c))}
                         </td>
                         <td className="px-3 py-2.5 text-muted whitespace-nowrap max-w-[140px] truncate">
                           {c.processedBy || "—"}
@@ -456,13 +590,13 @@ export default function Costos({
                           <IconButton
                             icon="edit"
                             tone="brand"
-                            label={`Editar pago a ${c.recipientName}`}
+                            label={`Editar ${KIND_LABEL[c.kind].toLowerCase()} de ${c.recipientName}`}
                             onClick={() => openEdit(c)}
                           />
                           <IconButton
                             icon="trash"
                             tone="danger"
-                            label={`Eliminar pago a ${c.recipientName}`}
+                            label={`Eliminar ${KIND_LABEL[c.kind].toLowerCase()} de ${c.recipientName}`}
                             onClick={() => setPendingDelete(c)}
                           />
                         </td>
@@ -474,10 +608,12 @@ export default function Costos({
               <tfoot>
                 <tr className="bg-nav text-nav-fg">
                   <td colSpan={4} className="px-3 py-3 font-bold text-sm">
-                    {filtered.length} pagos mostrados
+                    {filtered.length} movimientos mostrados
                   </td>
-                  <td className="px-3 py-3 text-right num font-bold whitespace-nowrap text-danger">
-                    −${fmt(totalShown)}
+                  <td
+                    className={`px-3 py-3 text-right num font-bold whitespace-nowrap ${signedTone(totalShown)}`}
+                  >
+                    {formatSigned(totalShown)}
                   </td>
                   <td colSpan={2} />
                 </tr>
@@ -487,13 +623,82 @@ export default function Costos({
         </Card>
       )}
 
+      {sortedCashCounts.length > 0 && (
+        <Card>
+          <h3 className="text-sm font-bold text-fg mb-2">
+            Arqueos de caja recientes
+          </h3>
+          <ul className="divide-y divide-line">
+            {sortedCashCounts.slice(0, 8).map((s) => (
+              <li
+                key={s.id}
+                className="py-2 flex items-start justify-between gap-3 text-sm"
+              >
+                <div className="min-w-0">
+                  <span className="block text-fg font-semibold truncate">
+                    {s.operatorName || "—"}{" "}
+                    <span className="text-xs font-normal text-subtle">
+                      · {s.kind === "apertura" ? "Inicio de turno" : "Cierre de turno"}
+                    </span>
+                  </span>
+                  <span className="block text-[11px] text-subtle">
+                    {formatDateTime(s.at)}
+                  </span>
+                  {s.notes && (
+                    <span className="block text-xs text-muted mt-0.5 break-words">
+                      {s.notes}
+                    </span>
+                  )}
+                </div>
+                <span className="num font-bold text-fg whitespace-nowrap">
+                  ${fmt(s.cashOnHand)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {openingShift && activeOperator && (
+        <OpenShiftDialog
+          operatorName={activeOperator.name}
+          onSkip={() => setOpeningShift(false)}
+          onConfirm={openShift}
+        />
+      )}
+
+      {closingShift && activeOperator && (
+        <CloseShiftDialog
+          operatorName={activeOperator.name}
+          openingCash={currentOpening?.cashOnHand}
+          dayBalance={todayBalance}
+          expectedCash={expectedCash}
+          shiftCount={shiftEntries.length}
+          onPrint={(countedCash, notes) =>
+            printShift(
+              {
+                operatorName: activeOperator.name,
+                startedAt: shiftStartedAt,
+                entries: shiftEntries,
+                openingCash: currentOpening?.cashOnHand,
+                expectedCash,
+                countedCash,
+                notes,
+              },
+              data.companyName,
+            )
+          }
+          onCancel={() => setClosingShift(false)}
+          onConfirm={closeShift}
+        />
+      )}
+
       {editing && (
         <CostoEditModal
           form={form}
           setForm={setForm}
           templates={templates}
           recipientSuggestions={recipientSuggestions}
-          conceptSuggestions={conceptSuggestions}
           onSave={handleEditSave}
           onClose={() => setEditing(null)}
           onSaveTemplate={saveTemplate}
@@ -503,12 +708,12 @@ export default function Costos({
 
       {pendingDelete && (
         <ConfirmDialog
-          title="Eliminar costo"
+          title="Eliminar movimiento"
           message={
             <>
-              Se eliminará el pago de{" "}
+              Se eliminará el {KIND_LABEL[pendingDelete.kind].toLowerCase()} de{" "}
               <strong className="text-fg">${fmt(pendingDelete.amount)}</strong>{" "}
-              a {pendingDelete.recipientName} del{" "}
+              ({pendingDelete.recipientName}) del{" "}
               {formatDate(pendingDelete.date)}.
             </>
           }
@@ -578,7 +783,7 @@ function SaveTemplateLink({
   draft: Draft
   templates: CostTemplate[]
   onSaveTemplate: (
-    t: Pick<CostTemplate, "recipientName" | "recipientKind" | "taxId">,
+    t: Pick<CostTemplate, "recipientName" | "taxId">,
   ) => void
 }) {
   const name = draft.recipientName.trim()
@@ -593,7 +798,6 @@ function SaveTemplateLink({
       onClick={() =>
         onSaveTemplate({
           recipientName: draft.recipientName,
-          recipientKind: draft.recipientKind,
           taxId: draft.taxId,
         })
       }
@@ -661,7 +865,7 @@ function TurnoLoginGate({
         <div>
           <h3 className="text-sm font-bold text-fg">Inicio de turno</h3>
           <p className="text-xs text-muted mt-0.5">
-            Identifícate para registrar los pagos de tu turno.
+            Identifícate para registrar los movimientos de tu turno.
           </p>
         </div>
 
@@ -885,6 +1089,225 @@ function DeleteOperatorDialog({
   )
 }
 
+/**
+ * Efectivo esperado en caja desde una apertura: lo contado al abrir más los
+ * cobros y menos los pagos de ese día registrados después. Los registros
+ * viejos no tienen hora; para esos se cuentan los de la encargada que abrió.
+ */
+function cashSinceOpening(costs: CostEntry[], opening: CostCashCount): number {
+  const day = localDay(opening.at)
+  const net = costs
+    .filter((c) => c.date === day)
+    .filter((c) =>
+      c.createdAt
+        ? c.createdAt >= opening.at
+        : c.processedBy === opening.operatorName,
+    )
+    .reduce((a, c) => a + signedAmount(c), 0)
+  return opening.cashOnHand + net
+}
+
+function parseCash(value: string): number | null {
+  const n = parseFloat(value)
+  return value.trim() !== "" && !Number.isNaN(n) && n >= 0 ? n : null
+}
+
+/**
+ * Efectivo al iniciar turno: opcional. Cerrar la ventana o tocar "Omitir"
+ * no registra nada y deja trabajar igual; solo sirve para que al cerrar
+ * haya contra qué cuadrar.
+ */
+function OpenShiftDialog({
+  operatorName,
+  onSkip,
+  onConfirm,
+}: {
+  operatorName: string
+  onSkip: () => void
+  onConfirm: (cashOnHand: number) => void
+}) {
+  const [cash, setCash] = useState("")
+  const cashValue = parseCash(cash)
+
+  return (
+    <Modal
+      title="Efectivo al iniciar turno"
+      onClose={onSkip}
+      width="max-w-sm"
+      footer={
+        <>
+          <Button className="flex-1" onClick={onSkip}>
+            Omitir
+          </Button>
+          <Button
+            variant="primary"
+            className="flex-1"
+            disabled={cashValue === null}
+            onClick={() => cashValue !== null && onConfirm(cashValue)}
+          >
+            Guardar
+          </Button>
+        </>
+      }
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (cashValue !== null) onConfirm(cashValue)
+        }}
+      >
+        <p className="text-sm text-muted">
+          Hola, {operatorName}. Si quieres, anota cuánto efectivo hay en caja
+          ahora; al cerrar el turno te servirá para cuadrar las cuentas.
+        </p>
+        <Field label="Efectivo en caja (USD)" hint="Opcional">
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={cash}
+            onChange={(e) => setCash(e.target.value)}
+            placeholder="0.00"
+            className={inputNumClass}
+            autoFocus
+          />
+        </Field>
+        {/* Los botones viven en el pie del modal, fuera del form: este deja que Enter guarde. */}
+        <button type="submit" hidden />
+      </form>
+    </Modal>
+  )
+}
+
+/**
+ * Arqueo al cerrar turno: el efectivo que queda en caja es obligatorio (un
+ * cierre sin ese dato no sirve para cuadrar), las notas no.
+ */
+function CloseShiftDialog({
+  operatorName,
+  openingCash,
+  dayBalance,
+  expectedCash,
+  shiftCount,
+  onPrint,
+  onCancel,
+  onConfirm,
+}: {
+  operatorName: string
+  openingCash?: number
+  /** Cobros menos pagos de hoy, igual que el renglón de la tabla. */
+  dayBalance: number
+  /** Efectivo que debería haber según la apertura; sin apertura, no hay. */
+  expectedCash?: number
+  /** Movimientos que registró esta encargada en su turno. */
+  shiftCount: number
+  onPrint: (countedCash: number | undefined, notes: string) => void
+  onCancel: () => void
+  onConfirm: (cashOnHand: number, notes: string) => void
+}) {
+  const [cash, setCash] = useState("")
+  const [notes, setNotes] = useState("")
+  const parsed = parseCash(cash)
+  const canConfirm = parsed !== null
+  const cashValue = parsed ?? 0
+
+  return (
+    <Modal
+      title="Cerrar turno"
+      onClose={onCancel}
+      width="max-w-sm"
+      footer={
+        <>
+          <Button className="flex-1" onClick={onCancel}>
+            Cancelar
+          </Button>
+          <Button
+            variant="primary"
+            icon="lock"
+            className="flex-1"
+            disabled={!canConfirm}
+            onClick={() => onConfirm(cashValue, notes)}
+          >
+            Cerrar turno
+          </Button>
+        </>
+      }
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (canConfirm) onConfirm(cashValue, notes)
+        }}
+      >
+        <p className="text-sm text-muted">
+          {operatorName}, antes de salir indica cuánto efectivo queda en caja.
+        </p>
+        <dl className="text-xs bg-sunken rounded-xl px-3 py-2 space-y-1">
+          {openingCash !== undefined && (
+            <div className="flex justify-between gap-3">
+              <dt className="text-muted">Al iniciar el turno</dt>
+              <dd className="num font-bold text-fg">${fmt(openingCash)}</dd>
+            </div>
+          )}
+          <div className="flex justify-between gap-3">
+            <dt className="text-muted">Balance diario</dt>
+            <dd className={`num font-bold ${signedTone(dayBalance)}`}>
+              {formatSigned(dayBalance)}
+            </dd>
+          </div>
+        </dl>
+        <Field label="Efectivo en caja (USD)">
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={cash}
+            onChange={(e) => setCash(e.target.value)}
+            placeholder="0.00"
+            className={inputNumClass}
+            autoFocus
+          />
+        </Field>
+        {expectedCash !== undefined && (
+          <div className="flex justify-between gap-3 text-xs bg-sunken rounded-xl px-3 py-2">
+            <span className="text-muted">En caja</span>
+            <span
+              className={`num font-bold ${expectedCash < 0 ? "text-danger" : "text-ok"}`}
+            >
+              ${fmt(expectedCash)}
+            </span>
+          </div>
+        )}
+        <Field label="Detalles" hint="Opcional">
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Faltantes, sobrantes, pendientes para el siguiente turno…"
+            rows={3}
+            className={inputClass}
+          />
+        </Field>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-muted">
+            {shiftCount} {shiftCount === 1 ? "movimiento" : "movimientos"} en
+            tu turno
+          </span>
+          <Button
+            size="sm"
+            icon="document"
+            onClick={() => onPrint(parsed ?? undefined, notes)}
+          >
+            Imprimir turno
+          </Button>
+        </div>
+        <button type="submit" hidden />
+      </form>
+    </Modal>
+  )
+}
+
 /* ------------------------------------------------------ Registro rápido */
 
 /**
@@ -898,7 +1321,6 @@ function QuickAddBar({
   setQuick,
   templates,
   recipientSuggestions,
-  conceptSuggestions,
   onAdd,
   onSaveTemplate,
   onDeleteTemplate,
@@ -908,10 +1330,9 @@ function QuickAddBar({
   setQuick: React.Dispatch<React.SetStateAction<Draft>>
   templates: CostTemplate[]
   recipientSuggestions: string[]
-  conceptSuggestions: string[]
   onAdd: () => void
   onSaveTemplate: (
-    t: Pick<CostTemplate, "recipientName" | "recipientKind" | "taxId">,
+    t: Pick<CostTemplate, "recipientName" | "taxId">,
   ) => void
   onDeleteTemplate: (id: string) => void
 }) {
@@ -921,7 +1342,6 @@ function QuickAddBar({
     setQuick((q) => ({
       ...q,
       recipientName: t.recipientName,
-      recipientKind: t.recipientKind,
       taxId: t.taxId,
     }))
     nameRef.current?.focus()
@@ -943,7 +1363,7 @@ function QuickAddBar({
         />
 
         <div className="grid sm:grid-cols-4 gap-3">
-          <Field label="A quién se le pagó" className="sm:col-span-2">
+          <Field label="Nombre" className="sm:col-span-2">
             <input
               ref={nameRef}
               value={quick.recipientName}
@@ -962,14 +1382,11 @@ function QuickAddBar({
           </Field>
           <Field label="Tipo">
             <Segmented
-              value={quick.recipientKind}
-              onChange={(recipientKind: CostRecipientKind) =>
-                setQuick((q) => ({ ...q, recipientKind }))
+              value={quick.kind}
+              onChange={(kind: CostMovementKind) =>
+                setQuick((q) => ({ ...q, kind }))
               }
-              options={[
-                { value: "empresa" as CostRecipientKind, label: "Empresa" },
-                { value: "persona" as CostRecipientKind, label: "Persona" },
-              ]}
+              options={KIND_OPTIONS}
             />
           </Field>
           <Field label="RUC / cédula">
@@ -985,21 +1402,16 @@ function QuickAddBar({
         </div>
 
         <div className="grid sm:grid-cols-2 gap-3">
-          <Field label="Consulta" hint="¿De qué es el pago?">
+          <Field label="Consulta" hint="¿De qué es el movimiento?">
             <input
               value={quick.concept}
               onChange={(e) =>
                 setQuick((q) => ({ ...q, concept: e.target.value }))
               }
               placeholder="Consultoría, materiales, trámite…"
-              list="quick-consulta-sugerencias"
+              autoComplete="off"
               className={inputClass}
             />
-            <datalist id="quick-consulta-sugerencias">
-              {conceptSuggestions.map((c) => (
-                <option key={c} value={c} />
-              ))}
-            </datalist>
           </Field>
           <Field label="Detalle" hint="Opcional">
             <input
@@ -1086,7 +1498,6 @@ function CostoEditModal({
   setForm,
   templates,
   recipientSuggestions,
-  conceptSuggestions,
   onSave,
   onClose,
   onSaveTemplate,
@@ -1096,11 +1507,10 @@ function CostoEditModal({
   setForm: React.Dispatch<React.SetStateAction<Draft>>
   templates: CostTemplate[]
   recipientSuggestions: string[]
-  conceptSuggestions: string[]
   onSave: () => void
   onClose: () => void
   onSaveTemplate: (
-    t: Pick<CostTemplate, "recipientName" | "recipientKind" | "taxId">,
+    t: Pick<CostTemplate, "recipientName" | "taxId">,
   ) => void
   onDeleteTemplate: (id: string) => void
 }) {
@@ -1110,14 +1520,13 @@ function CostoEditModal({
     setForm((f) => ({
       ...f,
       recipientName: t.recipientName,
-      recipientKind: t.recipientKind,
       taxId: t.taxId,
     }))
   }
 
   return (
     <Modal
-      title="Editar costo"
+      title="Editar movimiento"
       onClose={onClose}
       width="max-w-2xl"
       footer={
@@ -1151,7 +1560,7 @@ function CostoEditModal({
         )}
 
         <div className="grid sm:grid-cols-2 gap-4">
-          <Field label="A quién se le pagó">
+          <Field label="Nombre">
             <input
               value={form.recipientName}
               onChange={(e) =>
@@ -1169,14 +1578,11 @@ function CostoEditModal({
           </Field>
           <Field label="Tipo">
             <Segmented
-              value={form.recipientKind}
-              onChange={(recipientKind: CostRecipientKind) =>
-                setForm((f) => ({ ...f, recipientKind }))
+              value={form.kind}
+              onChange={(kind: CostMovementKind) =>
+                setForm((f) => ({ ...f, kind }))
               }
-              options={[
-                { value: "empresa" as CostRecipientKind, label: "Empresa" },
-                { value: "persona" as CostRecipientKind, label: "Persona" },
-              ]}
+              options={KIND_OPTIONS}
             />
           </Field>
         </div>
@@ -1209,19 +1615,14 @@ function CostoEditModal({
           </Field>
         </div>
 
-        <Field label="Consulta" hint="¿De qué es el pago?">
+        <Field label="Consulta" hint="¿De qué es el movimiento?">
           <input
             value={form.concept}
             onChange={(e) => setForm((f) => ({ ...f, concept: e.target.value }))}
             placeholder="Consultoría, materiales, trámite…"
-            list="editar-consulta-sugerencias"
+            autoComplete="off"
             className={inputClass}
           />
-          <datalist id="editar-consulta-sugerencias">
-            {conceptSuggestions.map((c) => (
-              <option key={c} value={c} />
-            ))}
-          </datalist>
         </Field>
 
         <div className="grid sm:grid-cols-2 gap-4">
@@ -1268,7 +1669,7 @@ function CostoEditModal({
           />
         </Field>
 
-        <Field label="Encargada/o" hint="Quién procesó el pago">
+        <Field label="Encargada/o" hint="Quién registró el movimiento">
           <input
             value={form.processedBy}
             onChange={(e) =>

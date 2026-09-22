@@ -87,7 +87,7 @@ const TABS: TabDef[] = [
     short: "Cuentas",
     icon: "receipt",
   },
-  { id: "costos", label: "Costos", short: "Costos", icon: "building" },
+  { id: "costos", label: "Caja", short: "Caja", icon: "building" },
   { id: "config", label: "Configuración", short: "Ajustes", icon: "settings" },
 ]
 

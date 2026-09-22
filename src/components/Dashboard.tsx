@@ -286,9 +286,9 @@ export default function Dashboard({
     </>
   ) : null
 
-  // Sin Contabilidad activa no hay "utilidad" que mezclar: los costos a
-  // terceros se muestran aparte, para no confundirlos con el pago de
-  // planilla que domina el resto del dashboard.
+  // Sin Contabilidad activa no hay "utilidad" que mezclar: Caja se muestra
+  // aparte, para no confundirla con el pago de planilla que domina el resto
+  // del dashboard.
   const costosResumen =
     !data.accountingEnabled && data.costs.length > 0 ? (
       <CostosResumenCard costs={data.costs} />
@@ -1040,26 +1040,45 @@ function CategoryCard({
 
 /**
  * Aparece solo con Contabilidad apagada, y separado del bloque de planilla:
- * el pago a colaboradores no debe leerse mezclado con los pagos a terceros.
+ * Caja es un registro aparte y no debe leerse mezclado con el pago a
+ * colaboradores.
  */
 function CostosResumenCard({ costs }: { costs: AppData["costs"] }) {
   const key = currentMonthKey()
-  const total = costsMonthTotal(costs, key)
-  const count = costs.filter((c) => monthKey(c.date) === key).length
+  const month = costs.filter((c) => monthKey(c.date) === key)
+  const cobros = month
+    .filter((c) => c.kind === "cobro")
+    .reduce((a, c) => a + c.amount, 0)
+  const pagos = costsMonthTotal(costs, key)
+  const balance = cobros - pagos
 
   return (
     <Card>
       <CardHeader
-        title="Costos a terceros"
-        subtitle={`${monthLabel(key)} · pagos a empresas y personas fuera de la planilla`}
+        title="Caja"
+        subtitle={`${monthLabel(key)} · ${month.length} ${month.length === 1 ? "movimiento" : "movimientos"}`}
       />
-      <div className="flex items-baseline justify-between">
-        <span className="num text-2xl font-extrabold text-danger">
-          ${fmt(total)}
-        </span>
-        <span className="text-xs text-muted">
-          {count} {count === 1 ? "pago" : "pagos"} este mes
-        </span>
+      <div className="grid grid-cols-3 gap-3">
+        <div>
+          <span className="block text-xs text-muted">Cobros</span>
+          <span className="num text-lg font-extrabold text-ok">
+            +${fmt(cobros)}
+          </span>
+        </div>
+        <div>
+          <span className="block text-xs text-muted">Pagos</span>
+          <span className="num text-lg font-extrabold text-danger">
+            −${fmt(pagos)}
+          </span>
+        </div>
+        <div>
+          <span className="block text-xs text-muted">Balance</span>
+          <span
+            className={`num text-lg font-extrabold ${balance < 0 ? "text-danger" : "text-ok"}`}
+          >
+            {balance < 0 ? "−" : "+"}${fmt(Math.abs(balance))}
+          </span>
+        </div>
       </div>
     </Card>
   )

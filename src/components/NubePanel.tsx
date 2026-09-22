@@ -18,7 +18,7 @@ const FALLBACK_LABEL: Record<string, string> = {
   editor: "Editor",
   viewer: "Solo lectura",
   asistencia: "Asistencia",
-  costos: "Costos",
+  costos: "Caja",
 }
 
 function roleLabel(roles: RoleDef[], role: CompanyRole): string {
