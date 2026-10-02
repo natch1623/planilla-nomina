@@ -9,7 +9,7 @@ export type EmployeeCategory = "profesional" | "empleado"
 export type PaymentType = "hourly" | "daily" | "fixed"
 
 /** Qué ocurrió en un día del período. `trabajo` usa entrada/salida; el resto son días completos. */
-export type DayType = "trabajo" | "feriado" | "vacaciones" | "incapacidad" | "ausencia"
+export type DayType = "trabajo" | "feriado" | "vacaciones" | "incapacidad" | "ausencia" | "descanso"
 
 /** El horario habitual de un colaborador para un día de la semana. */
 export interface DaySchedule {

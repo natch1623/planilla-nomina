@@ -43,6 +43,7 @@ export const DAY_TYPE_META: Record<DayType, {
   vacaciones: { label: "Vacaciones", short: "Vac.", token: "teal" },
   incapacidad: { label: "Incapacidad", short: "Inc.", token: "amber" },
   ausencia: { label: "Ausencia", short: "Aus.", token: "danger" },
+  descanso: { label: "Descanso", short: "Desc.", token: "muted" },
 }
 
 export const DAY_TYPES = Object.keys(DAY_TYPE_META) as DayType[]
@@ -163,7 +164,7 @@ export function fixedDayRate(employee: Employee): number {
 }
 
 function emptyDayCounts(): DayCounts {
-  return { trabajo: 0, feriado: 0, vacaciones: 0, incapacidad: 0, ausencia: 0 }
+  return { trabajo: 0, feriado: 0, vacaciones: 0, incapacidad: 0, ausencia: 0, descanso: 0 }
 }
 
 /** ¿Este tipo de día se paga como jornada completa sin trabajar? */

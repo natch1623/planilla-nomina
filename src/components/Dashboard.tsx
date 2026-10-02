@@ -180,9 +180,10 @@ export default function Dashboard({
       vacaciones: 0,
       incapacidad: 0,
       ausencia: 0,
+      descanso: 0,
     }
     for (const s of summaries) {
-      for (const t of DAY_TYPES) counts[t] += s.dayCounts[t]
+      for (const t of DAY_TYPES) counts[t] += s.dayCounts[t] ?? 0
     }
     return counts
   }, [summaries])
@@ -897,6 +898,7 @@ const DOT: Record<string, string> = {
   vacaciones: "bg-teal",
   incapacidad: "bg-amber",
   ausencia: "bg-danger",
+  descanso: "bg-muted",
 }
 
 const KPI_TONE: Record<Tone, string> = {

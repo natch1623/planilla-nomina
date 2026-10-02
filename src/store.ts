@@ -77,6 +77,7 @@ const DAY_TYPES: DayType[] = [
   "vacaciones",
   "incapacidad",
   "ausencia",
+  "descanso",
 ]
 
 export interface PeriodDates {

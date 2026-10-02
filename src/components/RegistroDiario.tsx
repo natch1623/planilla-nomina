@@ -85,6 +85,7 @@ const CELL_BG: Record<DayType, string> = {
   vacaciones: "bg-day-vacaciones",
   incapacidad: "bg-day-incapacidad",
   ausencia: "bg-day-ausencia",
+  descanso: "bg-day-descanso",
 }
 
 const CELL_FG: Record<DayType, string> = {
@@ -93,6 +94,7 @@ const CELL_FG: Record<DayType, string> = {
   vacaciones: "text-day-vacaciones-fg",
   incapacidad: "text-day-incapacidad-fg",
   ausencia: "text-day-ausencia-fg",
+  descanso: "text-day-descanso-fg",
 }
 
 /** Franja superior en la celda de la cuadrícula. */
@@ -102,6 +104,7 @@ const CELL_EDGE_TOP: Record<DayType, string> = {
   vacaciones: "shadow-[inset_0_3px_0_var(--day-vacaciones-edge)]",
   incapacidad: "shadow-[inset_0_3px_0_var(--day-incapacidad-edge)]",
   ausencia: "shadow-[inset_0_3px_0_var(--day-ausencia-edge)]",
+  descanso: "shadow-[inset_0_3px_0_var(--day-descanso-edge)]",
 }
 
 /** Franja lateral en las filas de las vistas por día y por colaborador. */
@@ -111,6 +114,7 @@ const CELL_EDGE_LEFT: Record<DayType, string> = {
   vacaciones: "shadow-[inset_4px_0_0_var(--day-vacaciones-edge)]",
   incapacidad: "shadow-[inset_4px_0_0_var(--day-incapacidad-edge)]",
   ausencia: "shadow-[inset_4px_0_0_var(--day-ausencia-edge)]",
+  descanso: "shadow-[inset_4px_0_0_var(--day-descanso-edge)]",
 }
 
 const CELL_BORDER: Record<DayType, string> = {
@@ -119,6 +123,7 @@ const CELL_BORDER: Record<DayType, string> = {
   vacaciones: "border-day-vacaciones-edge",
   incapacidad: "border-day-incapacidad-edge",
   ausencia: "border-day-ausencia-edge",
+  descanso: "border-day-descanso-edge",
 }
 
 /** El selector de tipo de día trae fondo y borde propios: se imponen con `!`. */
@@ -130,6 +135,7 @@ const SELECT_MARK: Record<DayType, string> = {
   incapacidad:
     "bg-day-incapacidad! text-day-incapacidad-fg! border-day-incapacidad-edge!",
   ausencia: "bg-day-ausencia! text-day-ausencia-fg! border-day-ausencia-edge!",
+  descanso: "bg-day-descanso! text-day-descanso-fg! border-day-descanso-edge!",
 }
 
 /** Etiqueta del tipo de día con el mismo contraste que la celda. */
@@ -1598,6 +1604,12 @@ function EntryEditor({
           </>
         ) : (
           <p className="rounded-xl p-2.5 mb-3 text-[11px] bg-raised text-muted">
+            {form.dayType === "descanso" &&
+              (hidePay
+                ? "Día libre del trabajador. No se registran horas ni cuenta como ausencia."
+                : isFixed
+                  ? "Día libre del trabajador. No descuenta del salario fijo de la quincena."
+                  : "Día libre del trabajador. No suma horas ni pago adicional; no cuenta como ausencia.")}
             {form.dayType === "vacaciones" &&
               (isDaily
                 ? hidePay

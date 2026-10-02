@@ -75,6 +75,9 @@
   --day-ausencia: #fdd2d2;
   --day-ausencia-fg: #b91c1c;
   --day-ausencia-edge: #dc2626;
+  --day-descanso: #e2e8f0;
+  --day-descanso-fg: #334155;
+  --day-descanso-edge: #64748b;
 
   --shadow-sm: 0 1px 2px rgb(16 32 60 / 0.06);
   --shadow-md: 0 4px 14px -4px rgb(16 32 60 / 0.12);
@@ -136,6 +139,9 @@
   --day-ausencia: #5e2227;
   --day-ausencia-fg: #fecaca;
   --day-ausencia-edge: #f87171;
+  --day-descanso: #293548;
+  --day-descanso-fg: #e2e8f0;
+  --day-descanso-edge: #94a3b8;
 
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
   --shadow-md: 0 4px 14px -4px rgb(0 0 0 / 0.55);
@@ -194,6 +200,9 @@
   --color-day-ausencia: var(--day-ausencia);
   --color-day-ausencia-fg: var(--day-ausencia-fg);
   --color-day-ausencia-edge: var(--day-ausencia-edge);
+  --color-day-descanso: var(--day-descanso);
+  --color-day-descanso-fg: var(--day-descanso-fg);
+  --color-day-descanso-edge: var(--day-descanso-edge);
 
   --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;

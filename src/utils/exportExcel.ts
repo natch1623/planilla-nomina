@@ -272,13 +272,13 @@ export function buildPayrollWorkbook(
   const detail = summaries.map((s) => ({
     Nombre: s.employee.name,
     ...Object.fromEntries(
-      DAY_TYPES.map((t) => [DAY_TYPE_META[t].label, s.dayCounts[t]]),
+      DAY_TYPES.map((t) => [DAY_TYPE_META[t].label, s.dayCounts[t] ?? 0]),
     ),
     "Total días registrados": s.entriesCount,
   }))
   if (detail.length > 0) {
     const wsDetail = XLSX.utils.json_to_sheet(detail)
-    wsDetail["!cols"] = [{ wch: 26 }, ...Array(6).fill({ wch: 14 })]
+    wsDetail["!cols"] = [{ wch: 26 }, ...Array(DAY_TYPES.length + 1).fill({ wch: 14 })]
     XLSX.utils.book_append_sheet(wb, wsDetail, "Días")
   }
 

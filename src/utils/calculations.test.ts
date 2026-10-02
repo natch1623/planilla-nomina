@@ -10,7 +10,7 @@ import {
   spanHours,
   splitHours,
 } from "./calculations"
-import { defaultWeeklySchedule } from "../store"
+import { defaultWeeklySchedule, normalizeData } from "../store"
 
 /* ------------------------------------------------------------------ */
 /* Ayudantes                                                           */
@@ -65,6 +65,38 @@ function entry(overrides: Partial<TimeEntry> = {}): TimeEntry {
 /* ------------------------------------------------------------------ */
 /* spanHours                                                           */
 /* ------------------------------------------------------------------ */
+
+describe("días de descanso", () => {
+  it.each(["hourly", "daily", "fixed"] as const)(
+    "registra descanso sin horas ni pago adicional para %s",
+    (paymentType) => {
+      const emp = employee({ paymentType, dailyRate: 50, fixedSalary: 450 })
+      // Cambiar un día trabajado a descanso puede conservar las marcas ocultas.
+      const rest = entry({ dayType: "descanso" })
+      const baseline = calcEmployeeSummary(emp, [], RULES)
+      const summary = calcEmployeeSummary(emp, [rest], { ...RULES, paySickLeave: true })
+
+      expect(calcWorkedHours(rest)).toEqual({ total: 0, crossesMidnight: false, invalid: false })
+      expect(summary.dayCounts.descanso).toBe(1)
+      expect(summary.dayCounts.ausencia).toBe(0)
+      expect(summary.daysWorked).toBe(0)
+      expect(summary.regularHours + summary.overtimeHours + summary.leaveHours).toBe(0)
+      expect(summary.totalPay).toBe(baseline.totalPay)
+      expect(summary.regularPay).toBe(paymentType === "fixed" ? 450 : 0)
+    },
+  )
+
+  it("conserva el descanso al cargar o importar un registro sin horario", () => {
+    const rest = entry({ dayType: "descanso", entryTime: "", exitTime: "", notes: "Día libre" })
+    const loaded = normalizeData(JSON.parse(JSON.stringify({
+      employees: [employee()],
+      timeEntries: [rest],
+    })))
+
+    expect(loaded.timeEntries).toHaveLength(1)
+    expect(loaded.timeEntries[0]).toMatchObject(rest)
+  })
+})
 
 describe("spanHours", () => {
   it("descuenta el almuerzo de una jornada normal", () => {
