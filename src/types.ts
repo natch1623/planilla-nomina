@@ -270,6 +270,8 @@ export interface CostTemplate {
   id: string
   recipientName: string
   taxId: string
+  /** Oculta también la sugerencia proveniente de movimientos anteriores. */
+  hidden?: boolean
 }
 
 /**

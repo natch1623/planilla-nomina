@@ -3,22 +3,60 @@ import { monthKey } from "./accounting"
 
 /**
  * Sugerencias para "a quién se le pagó": nombres ya guardados como plantilla
- * más cualquier beneficiario que aparezca en pagos anteriores, aunque nunca
- * se haya guardado como plantilla. Igual que con los cargos de colaboradores,
- * no hace falta una pantalla aparte para "definir" un beneficiario — basta
- * con haberlo escrito una vez.
+ * más cualquier beneficiario que aparezca en pagos anteriores. Los nombres
+ * eliminados del autocompletado se ocultan sin alterar esos movimientos.
  */
 export function recipientOptions(
   costs: CostEntry[],
   templates: CostTemplate[],
 ): string[] {
+  const hidden = new Set(
+    templates.filter((t) => t.hidden).map((t) => recipientKey(t.recipientName)),
+  )
   const names = [
-    ...templates.map((t) => t.recipientName),
+    ...templates.filter((t) => !t.hidden).map((t) => t.recipientName),
     ...costs.map((c) => c.recipientName),
   ]
     .map((n) => n.trim())
-    .filter((n) => n.length > 0)
-  return [...new Set(names)].sort((a, b) => a.localeCompare(b, "es"))
+    .filter((n) => n.length > 0 && !hidden.has(recipientKey(n)))
+  const unique = new Map<string, string>()
+  for (const name of names) {
+    if (!unique.has(recipientKey(name))) unique.set(recipientKey(name), name)
+  }
+  return [...unique.values()].sort((a, b) => a.localeCompare(b, "es"))
+}
+
+function recipientKey(name: string): string {
+  return name.trim().toLocaleLowerCase("es")
+}
+
+export function saveRecipientTemplate(
+  templates: CostTemplate[],
+  draft: Pick<CostTemplate, "recipientName" | "taxId">,
+): CostTemplate[] {
+  const recipientName = draft.recipientName.trim()
+  if (!recipientName) return templates
+  const key = recipientKey(recipientName)
+  const existing = templates.find((t) => recipientKey(t.recipientName) === key)
+  const saved: CostTemplate = {
+    id: existing?.id ?? crypto.randomUUID(),
+    recipientName,
+    taxId: draft.taxId.trim(),
+  }
+  return [...templates.filter((t) => recipientKey(t.recipientName) !== key), saved]
+}
+
+export function removeRecipientSuggestion(
+  templates: CostTemplate[],
+  name: string,
+): CostTemplate[] {
+  const key = recipientKey(name)
+  const existing = templates.find((t) => recipientKey(t.recipientName) === key)
+  // Conserva la exclusión para que el historial no vuelva a sugerir el nombre.
+  return [
+    ...templates.filter((t) => recipientKey(t.recipientName) !== key),
+    { id: existing?.id ?? crypto.randomUUID(), recipientName: name.trim(), taxId: "", hidden: true },
+  ]
 }
 
 /**

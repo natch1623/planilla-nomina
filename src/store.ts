@@ -439,6 +439,7 @@ function normalizeCostTemplate(raw: any): CostTemplate | null {
     id: str(raw.id) || crypto.randomUUID(),
     recipientName,
     taxId: str(raw.taxId),
+    ...(raw.hidden === true ? { hidden: true } : {}),
   }
 }
 

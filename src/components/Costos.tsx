@@ -9,7 +9,7 @@ import type {
   CostTemplate,
 } from "../types"
 import { fmt } from "../utils/calculations"
-import { hashPin, recipientOptions, signedAmount } from "../utils/costs"
+import { hashPin, recipientOptions, removeRecipientSuggestion, saveRecipientTemplate, signedAmount } from "../utils/costs"
 import { formatDate, formatDateTime, localDay, todayISO } from "../utils/dates"
 import { exportCajaWorkbook, printCaja, printShift } from "../utils/exportCaja"
 import Icon from "./Icon"
@@ -146,10 +146,12 @@ export default function Costos({
   const [openingShift, setOpeningShift] = useState(false)
   const [kindFilter, setKindFilter] = useState<KindFilter>("todos")
   const [query, setQuery] = useState("")
+  const [managingRecipients, setManagingRecipients] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
 
   const costs = data.costs
-  const templates = data.costTemplates
+  const storedTemplates = data.costTemplates
+  const templates = useMemo(() => storedTemplates.filter((t) => !t.hidden), [storedTemplates])
   const operators = data.costOperators
   const cashCounts = data.costCashCounts
   const activeOperator =
@@ -189,8 +191,8 @@ export default function Costos({
   )
 
   const recipientSuggestions = useMemo(
-    () => recipientOptions(costs, templates),
-    [costs, templates],
+    () => recipientOptions(costs, storedTemplates),
+    [costs, storedTemplates],
   )
   const sortedCashCounts = useMemo(
     () => [...cashCounts].sort((a, b) => b.at.localeCompare(a.at)),
@@ -373,38 +375,29 @@ export default function Costos({
    * vez de duplicarlo.
    */
   function saveTemplate(t: Pick<CostTemplate, "recipientName" | "taxId">) {
-    const name = t.recipientName.trim()
-    if (!name) return
-    const existing = templates.find(
-      (x) => x.recipientName.toLowerCase() === name.toLowerCase(),
-    )
-    if (existing) {
-      onChange({
-        costTemplates: templates.map((x) =>
-          x.id === existing.id ? { ...x, taxId: t.taxId } : x,
-        ),
-      })
-    } else {
-      onChange({
-        costTemplates: [
-          ...templates,
-          { id: crypto.randomUUID(), ...t, recipientName: name },
-        ],
-      })
-    }
-    onNotify("Plantilla guardada")
+    if (!t.recipientName.trim()) return
+    onChange({ costTemplates: saveRecipientTemplate(storedTemplates, t) })
+    onNotify("Nombre guardado en autocompletar")
+  }
+
+  function deleteRecipient(name: string) {
+    onChange({ costTemplates: removeRecipientSuggestion(storedTemplates, name) })
+    onNotify("Nombre eliminado del autocompletado")
   }
 
   function deleteTemplate(id: string) {
-    onChange({ costTemplates: templates.filter((t) => t.id !== id) })
+    const template = templates.find((t) => t.id === id)
+    if (template) deleteRecipient(template.recipientName)
   }
 
   return (
     <div className="space-y-5">
-      <SectionTitle
-        title="Caja"
-        subtitle="Movimientos en caja"
-      />
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <SectionTitle title="Caja" subtitle="Movimientos en caja" />
+        <Button size="sm" onClick={() => setManagingRecipients(true)}>
+          Autocompletar
+        </Button>
+      </div>
 
       {!activeOperator ? (
         <TurnoLoginGate
@@ -693,6 +686,16 @@ export default function Costos({
         />
       )}
 
+      {managingRecipients && (
+        <RecipientManager
+          names={recipientSuggestions}
+          templates={templates}
+          onSave={saveTemplate}
+          onDelete={deleteRecipient}
+          onClose={() => setManagingRecipients(false)}
+        />
+      )}
+
       {editing && (
         <CostoEditModal
           form={form}
@@ -736,6 +739,76 @@ export default function Costos({
 }
 
 /* ------------------------------------------------------- Plantillas */
+
+function RecipientManager({
+  names,
+  templates,
+  onSave,
+  onDelete,
+  onClose,
+}: {
+  names: string[]
+  templates: CostTemplate[]
+  onSave: (draft: Pick<CostTemplate, "recipientName" | "taxId">) => void
+  onDelete: (name: string) => void
+  onClose: () => void
+}) {
+  const [recipientName, setRecipientName] = useState("")
+  const [taxId, setTaxId] = useState("")
+  const existing = templates.some(
+    (t) => t.recipientName.toLowerCase() === recipientName.trim().toLowerCase(),
+  )
+
+  return (
+    <Modal title="Autocompletar de Caja" onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-sm text-muted">
+          Agrega nombres frecuentes o elimina sugerencias. Los movimientos ya registrados se conservan.
+        </p>
+        <form
+          className="space-y-3 rounded-xl border border-line p-3"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (!recipientName.trim()) return
+            onSave({ recipientName, taxId })
+            setRecipientName("")
+            setTaxId("")
+          }}
+        >
+          <Field label="Nombre de la empresa o persona">
+            <input value={recipientName} onChange={(e) => setRecipientName(e.target.value)} className={inputClass} autoFocus />
+          </Field>
+          <Field label="RUC / cédula (opcional)">
+            <input value={taxId} onChange={(e) => setTaxId(e.target.value)} className={inputClass} />
+          </Field>
+          <Button type="submit" variant="primary" disabled={!recipientName.trim()}>
+            {existing ? "Actualizar guardado" : "Agregar nuevo"}
+          </Button>
+        </form>
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-fg">Sugerencias disponibles ({names.length})</h3>
+          {names.length === 0 && <p className="text-sm text-muted">Todavía no hay nombres guardados.</p>}
+          {names.map((name) => {
+            const saved = templates.find((t) => t.recipientName.toLowerCase() === name.toLowerCase())
+            return (
+              <div key={name} className="flex items-center gap-2 rounded-xl border border-line p-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-fg break-words">{name}</p>
+                  <p className="text-xs text-muted break-words">{saved ? saved.taxId || "Sin RUC / cédula" : "De movimientos anteriores"}</p>
+                </div>
+                <Button size="sm" onClick={() => {
+                  setRecipientName(name)
+                  setTaxId(saved?.taxId ?? "")
+                }} aria-label={`Editar datos de ${name}`}>Editar</Button>
+                <Button size="sm" className="text-danger" aria-label={`Eliminar sugerencia ${name}`} onClick={() => onDelete(name)}>Eliminar</Button>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </Modal>
+  )
+}
 
 function TemplateChips({
   templates,
