@@ -71,6 +71,9 @@ export default function Dashboard({
   onChange,
 }: Props) {
   const [sort, setSort] = useState<SortKey>("net")
+  // En la fila de TOTALES los dos seguros se muestran sumados; doble clic
+  // los separa y otro doble clic los vuelve a juntar.
+  const [splitInsurance, setSplitInsurance] = useState(false)
   const [adjustingId, setAdjustingId] = useState<string | null>(null)
   const [adjustmentKind, setAdjustmentKind] = useState<PayrollAdjustmentKind>("bono")
   const [adjustmentAmount, setAdjustmentAmount] = useState("")
@@ -753,12 +756,33 @@ export default function Dashboard({
                 <td className="px-3 py-3 text-right font-mono font-bold text-violet">
                   ${fmt(totals.holidayPay)}
                 </td>
-                <td className="px-3 py-3 text-right font-mono font-bold text-danger">
-                  −${fmt(totals.socialSecurity)}
-                </td>
-                <td className="px-3 py-3 text-right font-mono font-bold text-danger">
-                  −${fmt(totals.education)}
-                </td>
+                {splitInsurance ? (
+                  <>
+                    <td
+                      onDoubleClick={() => setSplitInsurance(false)}
+                      title="Doble clic para sumar los seguros"
+                      className="px-3 py-3 text-right font-mono font-bold text-danger cursor-pointer select-none"
+                    >
+                      −${fmt(totals.socialSecurity)}
+                    </td>
+                    <td
+                      onDoubleClick={() => setSplitInsurance(false)}
+                      title="Doble clic para sumar los seguros"
+                      className="px-3 py-3 text-right font-mono font-bold text-danger cursor-pointer select-none"
+                    >
+                      −${fmt(totals.education)}
+                    </td>
+                  </>
+                ) : (
+                  <td
+                    colSpan={2}
+                    onDoubleClick={() => setSplitInsurance(true)}
+                    title="Seguro social + seguro educativo. Doble clic para verlos por separado"
+                    className="px-3 py-3 text-center font-mono font-bold text-danger cursor-pointer select-none"
+                  >
+                    −${fmt(totals.socialSecurity + totals.education)}
+                  </td>
+                )}
                 <td className="px-3 py-3 text-right font-mono font-bold text-danger">
                   {totals.loans > 0 ? `−$${fmt(totals.loans)}` : "—"}
                 </td>
