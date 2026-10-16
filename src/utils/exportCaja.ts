@@ -2,6 +2,8 @@ import jsPDF from "jspdf"
 import autoTable from "jspdf-autotable"
 import * as XLSX from "xlsx"
 import type { CostCashCount, CostEntry } from "../types"
+import type { CajaPeriod } from "./cajaPeriod"
+import { cajaPeriodSlug, cashCountsInPeriod, entriesInPeriod } from "./cajaPeriod"
 import { fmt } from "./calculations"
 import { signedAmount } from "./costs"
 import { formatDate, formatDateTime, localDay, todayISO } from "./dates"
@@ -39,13 +41,36 @@ function dailySummary(entries: CostEntry[]) {
 
 /**
  * Libro de Excel con los movimientos que se están viendo (respeta filtro y
- * búsqueda), el resumen por día y los arqueos de caja.
+ * búsqueda), el resumen por día y los arqueos de caja. Con `period`, se
+ * queda solo con lo de ese período y abre con una hoja que dice cuál es.
  */
 export function buildCajaWorkbook(
   entries: CostEntry[],
   cashCounts: CostCashCount[],
+  period?: CajaPeriod,
 ): XLSX.WorkBook {
   const wb = XLSX.utils.book_new()
+  if (period) {
+    entries = entriesInPeriod(entries, period)
+    cashCounts = cashCountsInPeriod(cashCounts, period)
+    const cobros = entries
+      .filter((c) => c.kind === "cobro")
+      .reduce((a, c) => a + c.amount, 0)
+    const pagos = entries
+      .filter((c) => c.kind === "pago")
+      .reduce((a, c) => a + c.amount, 0)
+    const wsPeriodo = XLSX.utils.aoa_to_sheet([
+      ["Período", period.label],
+      ["Desde", period.start],
+      ["Hasta", period.end],
+      ["Movimientos", entries.length],
+      ["Cobros", round(cobros)],
+      ["Pagos", round(-pagos) || 0],
+      ["Balance", round(cobros - pagos)],
+    ])
+    wsPeriodo["!cols"] = [{ wch: 14 }, { wch: 48 }]
+    XLSX.utils.book_append_sheet(wb, wsPeriodo, "Período")
+  }
 
   const movimientos = sortByDate(entries).map((c) => ({
     Fecha: c.date,
@@ -113,10 +138,12 @@ export function exportCajaWorkbook(
   entries: CostEntry[],
   cashCounts: CostCashCount[],
   companyName: string,
+  period?: CajaPeriod,
 ): void {
-  const wb = buildCajaWorkbook(entries, cashCounts)
+  const wb = buildCajaWorkbook(entries, cashCounts, period)
   const slug = companyName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_")
-  XLSX.writeFile(wb, `caja_${slug ? `${slug}_` : ""}${todayISO()}.xlsx`)
+  const when = period ? cajaPeriodSlug(period) : todayISO()
+  XLSX.writeFile(wb, `caja_${slug ? `${slug}_` : ""}${when}.xlsx`)
 }
 
 const M = 14
@@ -250,21 +277,49 @@ function cashCountsTable(doc: jsPDF, counts: CostCashCount[], startY: number) {
 
 /**
  * Hoja lista para imprimir con los movimientos que se están viendo y los
- * arqueos de esos mismos días.
+ * arqueos de esos mismos días. Con `period`, solo lo de ese período, y el
+ * encabezado dice cuál es.
  */
 export function printCaja(
   entries: CostEntry[],
   cashCounts: CostCashCount[],
   companyName: string,
+  period?: CajaPeriod,
 ): void {
-  const doc = newDoc(companyName, "Movimientos en caja")
-  movementsTable(doc, entries, 28)
-  const days = new Set(entries.map((c) => c.date))
-  const counts = cashCounts.filter((s) => days.has(localDay(s.at)))
-  if (counts.length > 0) {
-    cashCountsTable(doc, counts, (doc as any).lastAutoTable.finalY + 8)
+  let counts: CostCashCount[]
+  if (period) {
+    entries = entriesInPeriod(entries, period)
+    counts = cashCountsInPeriod(cashCounts, period)
+  } else {
+    const days = new Set(entries.map((c) => c.date))
+    counts = cashCounts.filter((s) => days.has(localDay(s.at)))
   }
-  openForPrint(doc, `caja_${todayISO()}.pdf`)
+  const doc = newDoc(companyName, "Movimientos en caja")
+  let startY = 28
+  if (period) {
+    doc.setTextColor(...NAVY)
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(10)
+    doc.text(`Período: ${period.label}`, M, startY + 2)
+    doc.setFont("helvetica", "normal")
+    startY += 7
+  }
+  if (entries.length > 0) {
+    movementsTable(doc, entries, startY)
+  } else {
+    doc.setFontSize(9)
+    doc.setTextColor(...MUTED)
+    doc.text("Sin movimientos en este período.", M, startY + 4)
+  }
+  if (counts.length > 0) {
+    const afterY =
+      entries.length > 0 ? (doc as any).lastAutoTable.finalY + 8 : startY + 10
+    cashCountsTable(doc, counts, afterY)
+  }
+  openForPrint(
+    doc,
+    `caja_${period ? cajaPeriodSlug(period) : todayISO()}.pdf`,
+  )
 }
 
 export interface ShiftReport {

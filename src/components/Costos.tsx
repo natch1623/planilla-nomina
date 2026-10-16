@@ -11,6 +11,15 @@ import type {
 import { fmt } from "../utils/calculations"
 import { hashPin, recipientOptions, removeRecipientSuggestion, saveRecipientTemplate, signedAmount } from "../utils/costs"
 import { formatDate, formatDateTime, localDay, todayISO } from "../utils/dates"
+import type { CajaPeriod, CajaPeriodKind } from "../utils/cajaPeriod"
+import {
+  cajaPeriodFor,
+  cajaRange,
+  entriesInPeriod,
+  formatSpan,
+  inCajaPeriod,
+  shiftCajaRef,
+} from "../utils/cajaPeriod"
 import { exportCajaWorkbook, printCaja, printShift } from "../utils/exportCaja"
 import Icon from "./Icon"
 import {
@@ -147,6 +156,7 @@ export default function Costos({
   const [kindFilter, setKindFilter] = useState<KindFilter>("todos")
   const [query, setQuery] = useState("")
   const [managingRecipients, setManagingRecipients] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
 
   const costs = data.costs
@@ -447,24 +457,9 @@ export default function Costos({
           ]}
         />
         {filtered.length > 0 && (
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              icon="document"
-              onClick={() => printCaja(filtered, cashCounts, data.companyName)}
-            >
-              Imprimir
-            </Button>
-            <Button
-              size="sm"
-              icon="download"
-              onClick={() =>
-                exportCajaWorkbook(filtered, cashCounts, data.companyName)
-              }
-            >
-              Excel
-            </Button>
-          </div>
+          <Button size="sm" icon="download" onClick={() => setExporting(true)}>
+            Imprimir / Excel
+          </Button>
         )}
         {costs.length > 4 && (
           <div className="relative max-w-sm flex-1 min-w-[220px]">
@@ -686,6 +681,26 @@ export default function Costos({
         />
       )}
 
+      {exporting && (
+        <ExportPeriodDialog
+          entries={filtered}
+          filterNote={[
+            kindFilter === "cobro" && "solo cobros",
+            kindFilter === "pago" && "solo pagos",
+            query.trim() && `búsqueda «${query.trim()}»`,
+          ]
+            .filter(Boolean)
+            .join(" y ")}
+          onPrint={(period) =>
+            printCaja(filtered, cashCounts, data.companyName, period)
+          }
+          onExcel={(period) =>
+            exportCajaWorkbook(filtered, cashCounts, data.companyName, period)
+          }
+          onClose={() => setExporting(false)}
+        />
+      )}
+
       {managingRecipients && (
         <RecipientManager
           names={recipientSuggestions}
@@ -735,6 +750,279 @@ export default function Costos({
         />
       )}
     </div>
+  )
+}
+
+/* ------------------------------------------------------- Exportar */
+
+type FixedPeriodKind = Exclude<CajaPeriodKind, "rango">
+
+const PERIOD_OPTIONS = [
+  { value: "dia" as CajaPeriodKind, label: "Día" },
+  { value: "semana" as CajaPeriodKind, label: "Semana" },
+  { value: "quincena" as CajaPeriodKind, label: "Quincena" },
+  { value: "mes" as CajaPeriodKind, label: "Mes" },
+  { value: "anio" as CajaPeriodKind, label: "Año" },
+  { value: "rango" as CajaPeriodKind, label: "Fechas" },
+]
+
+/** Para las flechas: "Día anterior", "Semana siguiente"… */
+const PERIOD_NOUN: Record<FixedPeriodKind, string> = {
+  dia: "Día",
+  semana: "Semana",
+  quincena: "Quincena",
+  mes: "Mes",
+  anio: "Año",
+}
+
+/** El último tipo de período elegido, para no tener que buscarlo cada vez. */
+const EXPORT_KIND_KEY = "caja_export_period_kind"
+
+function readExportKind(): CajaPeriodKind {
+  try {
+    const saved = localStorage.getItem(EXPORT_KIND_KEY)
+    if (PERIOD_OPTIONS.some((o) => o.value === saved)) {
+      return saved as CajaPeriodKind
+    }
+  } catch {
+    // Sin almacenamiento: se empieza por el día.
+  }
+  return "dia"
+}
+
+function writeExportKind(kind: CajaPeriodKind) {
+  try {
+    localStorage.setItem(EXPORT_KIND_KEY, kind)
+  } catch {
+    // No es crítico.
+  }
+}
+
+/**
+ * Antes de imprimir o bajar el Excel se elige qué período cubre. Día,
+ * semana, quincena, mes y año arrancan en el que incluye hoy y se recorren
+ * con las flechas (o saltando a una fecha); "Fechas" es un rango a mano.
+ */
+function ExportPeriodDialog({
+  entries,
+  filterNote,
+  onPrint,
+  onExcel,
+  onClose,
+}: {
+  /** Movimientos ya filtrados por tipo y búsqueda, igual que la tabla. */
+  entries: CostEntry[]
+  /** Qué filtro de la tabla sigue aplicado; vacío si ninguno. */
+  filterNote: string
+  onPrint: (period: CajaPeriod) => void
+  onExcel: (period: CajaPeriod) => void
+  onClose: () => void
+}) {
+  const today = todayISO()
+  const [kind, setKind] = useState<CajaPeriodKind>(readExportKind)
+  const [ref, setRef] = useState(today)
+  const [from, setFrom] = useState(`${today.slice(0, 8)}01`)
+  const [to, setTo] = useState(today)
+
+  const rangeError =
+    kind !== "rango"
+      ? ""
+      : !from || !to
+        ? "Escoge las dos fechas."
+        : from > to
+          ? "La fecha «Desde» no puede ser posterior a «Hasta»."
+          : ""
+  const period: CajaPeriod | null =
+    kind === "rango"
+      ? rangeError
+        ? null
+        : cajaRange(from, to)
+      : cajaPeriodFor(kind, ref)
+
+  const inPeriod = period ? entriesInPeriod(entries, period) : []
+  const cobros = inPeriod
+    .filter((c) => c.kind === "cobro")
+    .reduce((a, c) => a + c.amount, 0)
+  const pagos = inPeriod
+    .filter((c) => c.kind === "pago")
+    .reduce((a, c) => a + c.amount, 0)
+  const canExport = period !== null && inPeriod.length > 0
+
+  function chooseKind(next: CajaPeriodKind) {
+    setKind(next)
+    writeExportKind(next)
+  }
+
+  function run(action: (p: CajaPeriod) => void) {
+    if (!period || !canExport) return
+    action(period)
+    onClose()
+  }
+
+  return (
+    <Modal
+      title="Imprimir o descargar Excel"
+      subtitle="Escoge qué período de la caja quieres sacar"
+      onClose={onClose}
+      width="max-w-lg"
+      footer={
+        <>
+          <Button
+            className="flex-1"
+            icon="document"
+            disabled={!canExport}
+            onClick={() => run(onPrint)}
+          >
+            Imprimir
+          </Button>
+          <Button
+            variant="primary"
+            className="flex-1"
+            icon="download"
+            disabled={!canExport}
+            onClick={() => run(onExcel)}
+          >
+            Descargar Excel
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {/* Como Segmented, pero en dos filas en el celular para que se vean las seis opciones. */}
+        <div
+          className="grid grid-cols-3 sm:grid-cols-6 bg-sunken rounded-xl p-0.5 gap-0.5"
+          role="group"
+          aria-label="Tipo de período"
+        >
+          {PERIOD_OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => chooseKind(o.value)}
+              aria-pressed={kind === o.value}
+              className={`rounded-[10px] px-2 py-1.5 text-xs font-semibold transition-colors ${
+                kind === o.value
+                  ? "bg-surface text-fg shadow-card"
+                  : "text-muted hover:text-fg"
+              }`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+
+        {kind === "rango" ? (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Desde">
+                <input
+                  type="date"
+                  value={from}
+                  max={to || undefined}
+                  onChange={(e) => setFrom(e.target.value)}
+                  className={inputNumClass}
+                />
+              </Field>
+              <Field label="Hasta">
+                <input
+                  type="date"
+                  value={to}
+                  min={from || undefined}
+                  onChange={(e) => setTo(e.target.value)}
+                  className={inputNumClass}
+                />
+              </Field>
+            </div>
+            {rangeError && (
+              <p className="text-xs text-danger font-semibold">{rangeError}</p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex items-center gap-1 rounded-xl border border-line bg-surface px-1 py-1">
+              <IconButton
+                icon="chevronLeft"
+                label={`${PERIOD_NOUN[kind]} anterior`}
+                onClick={() => setRef(shiftCajaRef(kind, ref, -1))}
+              />
+              <div className="flex-1 min-w-0 text-center px-1">
+                <p className="text-sm font-bold text-fg first-letter:uppercase">
+                  {period?.title}
+                </p>
+                {period && period.start !== period.end && kind !== "semana" && (
+                  <p className="text-[11px] text-muted">
+                    {formatSpan(period.start, period.end)}
+                  </p>
+                )}
+              </div>
+              <IconButton
+                icon="chevronRight"
+                label={`${PERIOD_NOUN[kind]} siguiente`}
+                onClick={() => setRef(shiftCajaRef(kind, ref, 1))}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <label className="flex items-center gap-2 text-xs text-muted">
+                Ir a la fecha
+                <input
+                  type="date"
+                  value={ref}
+                  onChange={(e) => e.target.value && setRef(e.target.value)}
+                  className={`${inputNumClass} !w-auto !py-1 text-xs`}
+                />
+              </label>
+              {period && !inCajaPeriod(today, period) && (
+                <button
+                  type="button"
+                  onClick={() => setRef(today)}
+                  className="text-xs text-brand font-semibold"
+                >
+                  Volver a hoy
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {period && (
+          <div className="rounded-xl bg-sunken px-3 py-2.5">
+            {inPeriod.length === 0 ? (
+              <p className="text-sm text-muted text-center py-2">
+                No hay movimientos en este período.
+              </p>
+            ) : (
+              <dl className="text-xs space-y-1">
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted">Movimientos</dt>
+                  <dd className="num font-bold text-fg">{inPeriod.length}</dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted">Cobros</dt>
+                  <dd className="num font-bold text-ok">+${fmt(cobros)}</dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted">Pagos</dt>
+                  <dd className="num font-bold text-danger">−${fmt(pagos)}</dd>
+                </div>
+                <div className="flex justify-between gap-3 border-t border-line pt-1">
+                  <dt className="text-fg font-semibold">Balance</dt>
+                  <dd className={`num font-bold ${signedTone(cobros - pagos)}`}>
+                    {formatSigned(cobros - pagos)}
+                  </dd>
+                </div>
+              </dl>
+            )}
+          </div>
+        )}
+
+        {filterNote && (
+          <p className="flex items-start gap-1.5 text-xs text-muted">
+            <Icon name="alert" className="w-3.5 h-3.5 shrink-0 mt-px" />
+            Se incluye solo lo que muestra la tabla ({filterNote}).
+          </p>
+        )}
+      </div>
+    </Modal>
   )
 }
 

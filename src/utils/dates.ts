@@ -40,6 +40,13 @@ export function datesBetween(start: string, end: string): string[] {
   return dates
 }
 
+/** Suma (o resta, con `days` negativo) días a una fecha `YYYY-MM-DD`. */
+export function addDays(dateStr: string, days: number): string {
+  const d = toUTC(dateStr)
+  d.setUTCDate(d.getUTCDate() + days)
+  return fromUTC(d)
+}
+
 export function weekdayIndex(dateStr: string): number {
   return toUTC(dateStr).getUTCDay()
 }
