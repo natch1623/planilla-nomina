@@ -128,6 +128,7 @@ export function Button({
   icon,
   disabled,
   type = "button",
+  form,
   className = "",
   title,
 }: {
@@ -138,12 +139,15 @@ export function Button({
   icon?: IconName
   disabled?: boolean
   type?: "button" | "submit"
+  /** Id del formulario que envía, para un botón que vive fuera de él (pie de un Modal). */
+  form?: string
   className?: string
   title?: string
 }) {
   return (
     <button
       type={type}
+      form={form}
       onClick={onClick}
       disabled={disabled}
       title={title}
@@ -166,12 +170,15 @@ export function IconButton({
   label,
   tone = "muted",
   disabled,
+  className = "p-2",
 }: {
   icon: IconName
   onClick: () => void
   label: string
   tone?: Tone
   disabled?: boolean
+  /** Reemplaza el relleno, p. ej. para agrandar el área táctil en el celular. */
+  className?: string
 }) {
   return (
     <button
@@ -180,7 +187,7 @@ export function IconButton({
       title={label}
       aria-label={label}
       disabled={disabled}
-      className={`p-2 rounded-lg hover:bg-raised disabled:opacity-30 disabled:cursor-not-allowed ${TONE_TEXT[tone]}`}
+      className={`rounded-lg hover:bg-raised disabled:opacity-30 disabled:cursor-not-allowed ${TONE_TEXT[tone]} ${className}`}
     >
       <Icon name={icon} />
     </button>
@@ -226,8 +233,9 @@ export function Field({
         {label}
       </span>
       {children}
+      {/* `muted` y no `subtle`: la pista se lee, no es decoración. */}
       {hint && (
-        <span className="block text-[11px] text-subtle mt-1">{hint}</span>
+        <span className="block text-[11px] text-muted mt-1">{hint}</span>
       )}
     </label>
   )
@@ -259,8 +267,10 @@ export function Toggle({
       }`}
       style={{ height: 22, width: 40 }}
     >
+      {/* `left-0`: sin él la bolita partía del centro del botón (su posición
+          estática) y apagado quedaba a la derecha, casi igual que encendido. */}
       <span
-        className="absolute top-0.5 w-[18px] h-[18px] bg-white rounded-full shadow transition-transform"
+        className="absolute top-0.5 left-0 w-[18px] h-[18px] bg-white rounded-full shadow transition-transform"
         style={{ transform: `translateX(${checked ? 20 : 2}px)` }}
       />
     </button>
@@ -336,13 +346,50 @@ export function Modal({
   // habitual con un arrow function inline) el foco volvería a saltar al
   // diálogo en cada re-render, incluida cada tecla que se escribe en un
   // campo del formulario.
+  //
+  // Si un campo ya tomó el foco con `autoFocus` (React lo enfoca antes de
+  // correr los efectos) se respeta: antes el diálogo se lo quitaba y había
+  // que tocar el campo para empezar a escribir. Al cerrar, el foco vuelve a
+  // donde estaba, para no dejar al teclado al principio de la página.
   useEffect(() => {
-    ref.current?.focus()
+    const previous = document.activeElement as HTMLElement | null
+    if (!ref.current?.contains(document.activeElement)) ref.current?.focus()
+    return () => previous?.focus?.()
   }, [])
 
   useEffect(() => {
+    // Con una confirmación abierta encima de otra ventana, solo la de arriba
+    // responde: antes Escape cerraba las dos.
+    const isTop = () => {
+      const all = document.querySelectorAll('[role="dialog"]')
+      return all[all.length - 1] === ref.current
+    }
     function onKey(e: KeyboardEvent) {
+      if (!isTop()) return
       if (e.key === "Escape") onClose()
+      if (e.key === "Tab") trapTab(e)
+    }
+    // El tabulador da la vuelta dentro de la ventana en vez de seguir por
+    // los botones de la página que quedó detrás.
+    function trapTab(e: KeyboardEvent) {
+      const dialog = ref.current
+      if (!dialog) return
+      const items = [
+        ...dialog.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((el) => el.offsetParent !== null || el === document.activeElement)
+      if (items.length === 0) return
+      const first = items[0]
+      const last = items[items.length - 1]
+      const active = document.activeElement
+      if (e.shiftKey && (active === first || active === dialog)) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && (active === last || !dialog.contains(active))) {
+        e.preventDefault()
+        first.focus()
+      }
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
@@ -361,9 +408,12 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`bg-surface border border-line rounded-2xl shadow-modal w-full ${width} max-h-[90vh] overflow-y-auto animate-in focus:outline-none`}
+        // Título y botones quedan fijos y solo se desplaza el contenido: en
+        // pantallas bajas "Guardar" quedaba debajo del borde y había que
+        // bajar hasta el final del formulario para encontrarlo.
+        className={`bg-surface border border-line rounded-2xl shadow-modal w-full ${width} max-h-[90vh] flex flex-col overflow-hidden animate-in focus:outline-none`}
       >
-        <div className="flex items-start justify-between gap-4 p-5 pb-0">
+        <div className="flex items-start justify-between gap-4 p-5 pb-0 shrink-0">
           <div>
             <h3 className="text-lg font-bold text-fg">{title}</h3>
             {subtitle && (
@@ -372,8 +422,12 @@ export function Modal({
           </div>
           <IconButton icon="x" onClick={onClose} label="Cerrar" />
         </div>
-        <div className="p-5">{children}</div>
-        {footer && <div className="flex gap-3 px-5 pb-5">{footer}</div>}
+        <div className="p-5 overflow-y-auto min-h-0">{children}</div>
+        {footer && (
+          <div className="flex gap-3 px-5 py-4 border-t border-line shrink-0">
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   )

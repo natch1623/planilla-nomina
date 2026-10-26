@@ -117,6 +117,11 @@ export default function Prestamos({ data, onChange, onNotify }: ViewProps) {
 
   function confirmDelete() {
     if (!pendingDelete) return
+    if (Object.keys(pendingDelete.charges).length > 0) {
+      onNotify("Este préstamo tiene cuotas registradas. Suspende el descuento para conservar su historial.", "amber")
+      setPendingDelete(null)
+      return
+    }
     onChange({ loans: data.loans.filter((l) => l.id !== pendingDelete.id) })
     onNotify("Préstamo eliminado", "danger")
     setPendingDelete(null)
@@ -226,7 +231,10 @@ export default function Prestamos({ data, onChange, onNotify }: ViewProps) {
                       icon="trash"
                       tone="danger"
                       label="Eliminar préstamo"
-                      onClick={() => setPendingDelete(l)}
+                      onClick={() => {
+                        if (Object.keys(l.charges).length > 0) onNotify("Este préstamo tiene cuotas registradas. Usa suspender para detener el cobro.", "amber")
+                        else setPendingDelete(l)
+                      }}
                     />
                   </div>
                 </div>

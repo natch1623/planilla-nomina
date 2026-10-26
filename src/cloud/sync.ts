@@ -1,4 +1,5 @@
 import type { AppData } from "../types"
+import { readStored, StorageFailure, writeStored } from "../persistence"
 
 /**
  * Reglas de sincronización con la nube, separadas de React y de Supabase para
@@ -90,32 +91,29 @@ const LINKS_KEY = "planilla_cloud_links"
 
 export function readLinks(): CloudLinks {
   try {
-    const raw = localStorage.getItem(LINKS_KEY)
+    const raw = readStored(LINKS_KEY)
     if (!raw) return {}
     const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== "object") return {}
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Vínculos inválidos")
     const out: CloudLinks = {}
     for (const [profileId, v] of Object.entries<any>(parsed)) {
-      if (v && typeof v.companyId === "string" && v.companyId) {
+      if (v && typeof v.companyId === "string" && v.companyId && Number.isSafeInteger(v.revision) && v.revision >= 0 && typeof v.dirty === "boolean") {
         out[profileId] = {
           companyId: v.companyId,
-          revision: Number.isFinite(v.revision) ? v.revision : 0,
-          dirty: v.dirty === true,
+          revision: v.revision,
+          dirty: v.dirty,
         }
-      }
+      } else throw new Error("Vínculo incompleto")
     }
     return out
-  } catch {
-    return {}
+  } catch (err) {
+    if (err instanceof StorageFailure) throw err
+    throw new StorageFailure("corrupt", "No se pueden leer los vínculos de las empresas con la nube. Conservamos el original.", LINKS_KEY)
   }
 }
 
 export function writeLinks(links: CloudLinks): void {
-  try {
-    localStorage.setItem(LINKS_KEY, JSON.stringify(links))
-  } catch (err) {
-    console.error("No se pudo guardar el vínculo con la nube", err)
-  }
+  writeStored(LINKS_KEY, JSON.stringify(links), true)
 }
 
 /** Perfil local que ya está vinculado a esa empresa, si lo hay. */

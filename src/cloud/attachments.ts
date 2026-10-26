@@ -1,5 +1,6 @@
 import type { AppData, Attachment } from "../types"
 import * as api from "./client"
+import { periodKeyForDate } from "../store"
 
 /**
  * Adjuntos: comprobantes de movimientos y fotos de incapacidad.
@@ -103,16 +104,13 @@ export async function attachmentUrl(a: Attachment): Promise<string> {
   return url
 }
 
-/** Borra el archivo de la nube; los locales se van con el dato que los contiene. */
+/**
+ * Desvincular un comprobante no elimina su archivo: puede seguir referenciado
+ * en otra revisión o en un documento cuyo guardado falló. La depuración física
+ * requiere un proceso de retención que compruebe también el historial.
+ */
 export async function removeAttachment(a: Attachment): Promise<void> {
-  if (!a.path || !api.cloudAvailable) return
-  urlCache.delete(a.path)
-  try {
-    await api.removeFile(a.path)
-  } catch (err) {
-    // Un archivo huérfano molesta menos que impedir borrar el movimiento.
-    console.error("No se pudo borrar el adjunto de la nube", err)
-  }
+  if (a.path) urlCache.delete(a.path)
 }
 
 export function isCloudAttachment(a: Attachment): boolean {
@@ -125,7 +123,11 @@ export function isCloudAttachment(a: Attachment): boolean {
 export function countInlineAttachments(data: AppData): number {
   let n = 0
   for (const t of data.transactions) n += t.attachments.filter((a) => a.dataUrl).length
-  for (const e of data.timeEntries) n += e.attachments.filter((a) => a.dataUrl).length
+  for (const list of [data.fixedExpensePayments, data.dailyExpenses, data.supplierPayments]) {
+    for (const item of list) n += item.attachments.filter((a) => a.dataUrl).length
+  }
+  const closed = new Set(data.closedPeriods.map(c => c.key))
+  for (const e of data.timeEntries) if (!closed.has(periodKeyForDate(e.date))) n += e.attachments.filter((a) => a.dataUrl).length
   return n
 }
 
@@ -171,9 +173,29 @@ export async function migrateAttachments(
     transactions.push({ ...t, attachments })
   }
 
+  // Los recibos de Gastos van a la misma carpeta que los comprobantes de
+  // movimientos: tienen los mismos permisos de lectura y escritura.
+  async function moveAll<T extends { attachments: Attachment[] }>(list: T[]): Promise<T[]> {
+    const out: T[] = []
+    for (const item of list) {
+      if (!item.attachments.some((a) => a.dataUrl)) {
+        out.push(item)
+        continue
+      }
+      const attachments = []
+      for (const a of item.attachments) attachments.push(await move(a, "movimientos"))
+      out.push({ ...item, attachments })
+    }
+    return out
+  }
+  const fixedExpensePayments = await moveAll(data.fixedExpensePayments)
+  const dailyExpenses = await moveAll(data.dailyExpenses)
+  const supplierPayments = await moveAll(data.supplierPayments)
+
   const timeEntries = []
+  const closed = new Set(data.closedPeriods.map(c => c.key))
   for (const e of data.timeEntries) {
-    if (!e.attachments.some((a) => a.dataUrl)) {
+    if (closed.has(periodKeyForDate(e.date)) || !e.attachments.some((a) => a.dataUrl)) {
       timeEntries.push(e)
       continue
     }
@@ -183,7 +205,11 @@ export async function migrateAttachments(
   }
 
   if (moved === 0) return { data, moved, failed }
-  return { data: { ...data, transactions, timeEntries }, moved, failed }
+  return {
+    data: { ...data, transactions, timeEntries, fixedExpensePayments, dailyExpenses, supplierPayments },
+    moved,
+    failed,
+  }
 }
 
 /** Convierte un data URL en el archivo original para poder subirlo. */

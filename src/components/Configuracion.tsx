@@ -11,7 +11,7 @@ import {
   profileLabel,
 } from "../store"
 import { calcTotals, fmt } from "../utils/calculations"
-import { clearLoanCharges, recordLoanCharges } from "../utils/loans"
+import { assertPayrollIntegrity, closePayroll, reopenPayroll } from "../utils/payrollClosure"
 import { formatDate } from "../utils/dates"
 import Icon from "./Icon"
 import {
@@ -113,33 +113,14 @@ export default function Configuracion({
   }
 
   function closePeriod() {
-    onChange({
-      ...data,
-      // El cierre es el momento en que la cuota de préstamo deja de ser
-      // hipotética: se guarda lo que la planilla logró descontar de verdad,
-      // que puede ser menos si el neto no alcanzaba.
-      loans: recordLoanCharges(data.loans, liveSummaries, currentPeriod),
-      closedPeriods: [
-        ...data.closedPeriods.filter((c) => c.key !== key),
-        {
-          key,
-          period: currentPeriod,
-          closedAt: new Date().toISOString(),
-          summaries: liveSummaries,
-        },
-      ],
-    })
+    onChange(closePayroll(data, liveSummaries))
     onNotify("Quincena cerrada: los montos quedaron congelados")
     setPending(null)
   }
 
   function reopenPeriod() {
-    onChange({
-      ...data,
-      loans: clearLoanCharges(data.loans, currentPeriod),
-      closedPeriods: data.closedPeriods.filter((c) => c.key !== key),
-    })
-    onNotify("Quincena reabierta", "amber")
+    onChange(reopenPayroll(data))
+    onNotify("Quincena reabierta; el cierre anterior se conserva en el historial", "amber")
     setPending(null)
   }
 
@@ -547,7 +528,7 @@ export default function Configuracion({
       {pending === "reopen" && (
         <ConfirmDialog
           title="Reabrir la quincena"
-          message="Los montos volverán a calcularse con los datos y tarifas actuales, que pueden diferir de lo que ya se pagó. Se descarta la copia congelada."
+          message="El cierre anterior se conservará en el historial. Los cambios posteriores se calcularán con los datos actuales y el próximo cierre tendrá una nueva revisión."
           confirmLabel="Reabrir"
           onConfirm={reopenPeriod}
           onCancel={() => setPending(null)}
@@ -577,6 +558,11 @@ export default function Configuracion({
                 variant="danger"
                 className="flex-1"
                 onClick={() => {
+                  try { assertPayrollIntegrity(data, importedData) }
+                  catch (err) {
+                    onNotify(`${err instanceof Error ? err.message : "El respaldo no conserva el historial."} Usa Fusionar o impórtalo en una empresa nueva.`, "amber")
+                    return
+                  }
                   onChange(importedData)
                   onNotify("Datos reemplazados")
                   setImportedData(null)

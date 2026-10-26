@@ -1,4 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react"
+import { downloadLocalRecovery, StorageFailure } from "../persistence"
+import StorageRecovery from "./StorageRecovery"
 
 interface Props {
   children: ReactNode
@@ -30,15 +32,7 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   private downloadBackup = () => {
     try {
-      const raw = localStorage.getItem("planilla_data")
-      if (!raw) return
-      const blob = new Blob([raw], { type: "application/json" })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      a.href = url
-      a.download = `planilla_respaldo_${new Date().toISOString().slice(0, 10)}.json`
-      a.click()
-      URL.revokeObjectURL(url)
+      downloadLocalRecovery()
     } catch (err) {
       console.error("No se pudo generar el respaldo", err)
     }
@@ -47,6 +41,7 @@ export default class ErrorBoundary extends Component<Props, State> {
   render() {
     const { error } = this.state
     if (!error) return this.props.children
+    if (error instanceof StorageFailure) return <StorageRecovery error={error} />
 
     return (
       <div className="min-h-screen bg-app grid place-items-center p-6">
@@ -56,9 +51,8 @@ export default class ErrorBoundary extends Component<Props, State> {
           </h1>
 
           <p className="text-sm text-muted leading-relaxed">
-            Tus datos siguen guardados en este navegador. Antes de recargar,
-            descarga un respaldo: si el error se repite, es lo que te permite
-            recuperar la planilla.
+            Descarga una copia de los datos disponibles en este navegador antes de
+            recargar. Los cambios que aún estaban en memoria podrían no estar guardados.
           </p>
 
           <div className="flex gap-2">

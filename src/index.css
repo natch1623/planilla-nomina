@@ -26,7 +26,10 @@
   --line-strong: #cbd5e6;
 
   --fg: #16233b;
-  --muted: #64748b;
+  /* 5.3:1 sobre el fondo de la app; el #64748b de antes daba 4.2 y no
+     llegaba al 4.5 mínimo para texto normal. */
+  --muted: #56657b;
+  /* Decorativo (separadores, "—"): no alcanza para texto que se lee. */
   --subtle: #94a3b8;
 
   --nav: #16243d;
@@ -40,13 +43,15 @@
   --brand-soft: #e8f0fc;
   --brand-fg: #ffffff;
 
-  --ok: #0e9f6e;
+  /* Los tres tonos de estado pasan 4.5:1 sobre su propio tinte `-soft`,
+     que es donde viven en las insignias ("Pagado", "Vencido"…). */
+  --ok: #047857;
   --ok-soft: #e0f8ee;
 
-  --danger: #dc2626;
+  --danger: #c81e1e;
   --danger-soft: #fdeaea;
 
-  --amber: #c2680a;
+  --amber: #a3500a;
   --amber-soft: #fdf0d5;
 
   --violet: #7c3aed;

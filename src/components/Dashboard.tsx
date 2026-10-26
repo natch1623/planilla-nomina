@@ -14,6 +14,8 @@ import {
 import type { AppData, EmployeeSummary, PayPeriod, PayrollAdjustmentKind } from "../types"
 import type { PayrollRules } from "../utils/calculations"
 import { periodKey, shiftPeriod } from "../store"
+import { payrollReportData } from "../utils/payrollClosure"
+import { rulesFrom } from "../utils/calculations"
 import {
   DAY_TYPE_META,
   DAY_TYPES,
@@ -195,14 +197,15 @@ export default function Dashboard({
   // inicial y anulaba la división que hace el menú de exportación.
   async function downloadPayslip(s: EmployeeSummary) {
     try {
+      const report = payrollReportData(data)
       const { exportPayslip } = await import("../utils/exportPayslip")
       exportPayslip(
         s,
         period,
-        companyName,
-        data.timeEntries,
-        data.manualAdjustments,
-        rules,
+        report.companyName,
+        report.timeEntries,
+        report.manualAdjustments,
+        rulesFrom(report),
       )
       onNotify(`Comprobante de ${s.employee.name.split(" ")[0]} descargado`)
     } catch (err) {

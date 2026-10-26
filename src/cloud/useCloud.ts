@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AppData } from "../types"
-import { DATA_VERSION, defaultData, loadProfileData, mergeAppData, normalizeData } from "../store"
+import { DATA_VERSION, decodeStoredData, defaultData, loadProfileData, mergeAppData, normalizeData, saveProfileData, storageFailure } from "../store"
 import type { MergePreview, MergeWinner } from "../store"
 import * as api from "./client"
 import type { CloudCompany, CloudSnapshot, RoleAccess } from "./client"
@@ -41,6 +41,11 @@ export type CloudStatus =
 type Tone = "teal" | "amber" | "danger"
 
 interface Options {
+  onStorageError?: (error: unknown) => void
+  /** Un error local detiene toda sincronización; no hay fallback vacío. */
+  enabled?: boolean
+  /** El documento actual debe estar guardado localmente antes de subirlo. */
+  persisted?: boolean
   activeId: string
   data: AppData
   setData: (data: AppData) => void
@@ -67,6 +72,9 @@ const PUSH_DELAY = 1500
 const POLL_EVERY = 60_000
 
 export function useCloud({
+  onStorageError,
+  enabled = true,
+  persisted = true,
   activeId,
   data,
   setData,
@@ -85,11 +93,21 @@ export function useCloud({
   const [links, setLinksState] = useState<CloudLinks>(() => (available ? readLinks() : {}))
   const [phase, setPhase] = useState<"idle" | "saving" | "error" | "outdated">("idle")
   const [lastError, setLastError] = useState("")
-  const [conflict, setConflict] = useState<CloudSnapshot | null>(null)
+  type Context = { profileId: string; companyId: string | null; generation: number }
+  const [conflict, setConflict] = useState<(CloudSnapshot & { context: Context }) | null>(null)
 
   const link: CloudLink | null = links[activeId] ?? null
   const company = link ? (companies.find((c) => c.id === link.companyId) ?? null) : null
   const access: RoleAccess | null = company?.access ?? null
+  const identity = `${activeId}:${link?.companyId ?? ""}:${email ?? ""}:${JSON.stringify(access)}`
+  const context = useRef({ identity, generation: 0 })
+  if (context.current.identity !== identity) context.current = { identity, generation: context.current.generation + 1 }
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
+  const persistedRef = useRef(persisted)
+  persistedRef.current = persisted
+  const storageErrorRef = useRef(onStorageError)
+  storageErrorRef.current = onStorageError
 
   // Los callbacks asíncronos necesitan el valor vigente, no el de su render.
   const dataRef = useRef(data)
@@ -107,20 +125,38 @@ export function useCloud({
   const signedIn = email !== null
   const signedInRef = useRef(signedIn)
   signedInRef.current = signedIn
+  const accountRef = useRef(email)
+  accountRef.current = email
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; context.current.generation++ }
+  }, [])
 
   const pushing = useRef(false)
   const pushAgain = useRef(false)
   /** Contador de ediciones: dice si hubo cambios mientras se subía. */
   const edits = useRef(0)
   /** El próximo cambio de `data` viene de la nube, no del usuario. */
-  const applyingRemote = useRef(false)
+  const applyingRemote = useRef<AppData | null>(null)
   const noticeWhilePushing = useRef(false)
   const outdated = useRef(false)
+  const storageBlocked = useRef(false)
+  const capture = useCallback((): Context => ({ profileId: activeRef.current, companyId: linksRef.current[activeRef.current]?.companyId ?? null, generation: context.current.generation }), [])
+  const isCurrent = useCallback((c: Context) => mounted.current && enabledRef.current && !storageBlocked.current && c.generation === context.current.generation && c.profileId === activeRef.current && c.companyId === (linksRef.current[c.profileId]?.companyId ?? null), [])
+  const checkSequence = useRef(0)
 
   const setLinks = useCallback((update: (prev: CloudLinks) => CloudLinks) => {
     const next = update(linksRef.current)
+    try { writeLinks(next) }
+    catch (err) {
+      storageBlocked.current = true
+      setLastError(err instanceof Error ? err.message : String(err))
+      setPhase("error")
+      storageErrorRef.current?.(err)
+      throw err
+    }
     linksRef.current = next
-    writeLinks(next)
     setLinksState(next)
   }, [])
 
@@ -134,7 +170,9 @@ export function useCloud({
   const refreshCompanies = useCallback(async () => {
     if (!signedInRef.current) return
     try {
-      setCompanies(await api.listCompanies())
+      const account = accountRef.current
+      const result = await api.listCompanies()
+      if (mounted.current && account && account === accountRef.current) setCompanies(result)
     } catch (err) {
       console.error("No se pudo listar las empresas de la nube", err)
     }
@@ -180,17 +218,18 @@ export function useCloud({
     async (companyIdToRead: string, a: RoleAccess, base: AppData): Promise<CloudSnapshot> => {
       if (a.readsAll) return api.fetchCompany(companyIdToRead)
       let data: AppData = base
-      let revision = Infinity
+      let revision: number | null = null
       let updatedAt = ""
       let updatedByEmail = ""
       for (const sec of usableSections(a)) {
         const part = await api.fetchSection(companyIdToRead, sec)
         data = applySection(data, sec, part.payload)
-        revision = Math.min(revision, part.revision)
+        if (revision !== null && revision !== part.revision) throw new api.CloudError("La empresa cambió durante la descarga. Vuelve a intentar.")
+        revision = part.revision
         updatedAt = part.updatedAt
         updatedByEmail = part.updatedByEmail
       }
-      if (!Number.isFinite(revision)) {
+      if (revision === null) {
         throw new api.CloudError("Tu rango no incluye nada que esta versión pueda mostrar.")
       }
       return { data, revision, updatedAt, updatedByEmail }
@@ -199,19 +238,28 @@ export function useCloud({
   )
 
   const applySnapshot = useCallback(
-    (snap: CloudSnapshot, profileId: string) => {
+    (snap: CloudSnapshot, operation: Context) => {
+      if (!isCurrent(operation)) return
       if (isFromNewerApp(snap.data, DATA_VERSION)) {
         outdated.current = true
         setPhase("outdated")
         return
       }
-      if (activeRef.current === profileId) {
-        applyingRemote.current = true
-        setData(normalizeData(withLocalFields(snap.data, dataRef.current)))
+      const next = decodeStoredData(JSON.stringify(withLocalFields(snap.data, dataRef.current)))
+      if (!saveProfileData(operation.profileId, next, "cloud")) {
+        const err = storageFailure()!
+        storageBlocked.current = true
+        setLastError(err.message)
+        setPhase("error")
+        storageErrorRef.current?.(err)
+        throw err
       }
-      patchLink(profileId, { revision: snap.revision, dirty: false })
+      applyingRemote.current = next
+      dataRef.current = next
+      setData(next)
+      patchLink(operation.profileId, { revision: snap.revision, dirty: false })
     },
-    [patchLink, setData],
+    [isCurrent, patchLink, setData],
   )
 
   const checkRemote = useCallback(
@@ -219,21 +267,28 @@ export function useCloud({
       const profileId = activeRef.current
       const current = linksRef.current[profileId]
       const a = accessRef.current
-      if (!current || !a || !signedInRef.current || conflictRef.current || outdated.current) return
+      if (!enabledRef.current || storageBlocked.current || !current || !a || !signedInRef.current || conflictRef.current || outdated.current) return
+      const operation = capture()
+      const sequence = ++checkSequence.current
+      const dataAtStart = dataRef.current
       if (pushing.current) {
         noticeWhilePushing.current = true
         return
       }
       try {
         const remoteRev = knownRevision ?? (await api.fetchRevision(current.companyId))
+        if (!isCurrent(operation) || sequence !== checkSequence.current) return
         // Quien no puede escribir nunca tiene cambios propios que proteger.
-        const dirty = current.dirty && api.canWrite(a)
+        const dirty = (linksRef.current[profileId]?.dirty || !onlyLocalFieldsChanged(dataAtStart, dataRef.current)) && api.canWrite(a)
         const decision = decideRemote({ revision: current.revision, dirty }, remoteRev)
         if (decision === "ignore") return
-        const snap = await fetchSnapshot(current.companyId, a, dataRef.current)
-        if (activeRef.current !== profileId) return
-        if (decision === "apply") {
-          applySnapshot(snap, profileId)
+        const snap = await fetchSnapshot(current.companyId, a, dataAtStart)
+        if (!isCurrent(operation) || sequence !== checkSequence.current) return
+        if (snap.revision < remoteRev) throw new api.CloudError("La descarga no incluye la revisión esperada. Vuelve a intentar.")
+        if (isFromNewerApp(snap.data, DATA_VERSION)) { outdated.current = true; setPhase("outdated"); return }
+        const changed = api.canWrite(a) && (!onlyLocalFieldsChanged(dataAtStart, dataRef.current) || linksRef.current[profileId]?.dirty)
+        if (decision === "apply" && !changed) {
+          applySnapshot(snap, operation)
           if (!outdated.current) {
             notify(
               snap.updatedByEmail
@@ -243,14 +298,15 @@ export function useCloud({
             void refreshCompanies()
           }
         } else {
-          setConflict(snap)
+          setConflict({ ...snap, context: operation })
         }
       } catch (err) {
+        if (!isCurrent(operation)) return
         setLastError(err instanceof Error ? err.message : String(err))
         setPhase("error")
       }
     },
-    [applySnapshot, fetchSnapshot, notify, refreshCompanies],
+    [applySnapshot, capture, fetchSnapshot, isCurrent, notify, refreshCompanies],
   )
 
   /* ------------------------------ Subir ------------------------------- */
@@ -259,7 +315,8 @@ export function useCloud({
     const profileId = activeRef.current
     const current = linksRef.current[profileId]
     const a = accessRef.current
-    if (!current?.dirty || !signedInRef.current || conflictRef.current || outdated.current) return
+    if (!enabledRef.current || storageBlocked.current || !persistedRef.current || !current?.dirty || !signedInRef.current || conflictRef.current || outdated.current) return
+    const operation = capture()
     // Sin saber el rango todavía no se sube nada: podría ir por el camino
     // equivocado (empresa completa vs. secciones).
     if (!a || !api.canWrite(a)) return
@@ -281,60 +338,68 @@ export function useCloud({
         // Una sección tras otra, cada una sobre la revisión que dejó la anterior.
         res = { ok: true, revision: current.revision }
         for (const sec of usableSections(a)) {
+          if (!isCurrent(operation)) return
           res = await api.saveSection(current.companyId, sec, sectionPayload(sec, snapshot), res.revision)
           if (!res.ok) break
         }
       }
+      if (!isCurrent(operation)) return
       if (res.ok) {
-        const stillDirty = edits.current !== editsAtStart && activeRef.current === profileId
+        const stillDirty = edits.current !== editsAtStart || !onlyLocalFieldsChanged(snapshot, dataRef.current)
         patchLink(profileId, { revision: res.revision, dirty: stillDirty })
         setPhase("idle")
         if (stillDirty) pushAgain.current = true
       } else {
-        const snap = await fetchSnapshot(current.companyId, a, dataRef.current)
-        setConflict(snap)
+        const snap = await fetchSnapshot(current.companyId, a, snapshot)
+        if (!isCurrent(operation)) return
+        if (isFromNewerApp(snap.data, DATA_VERSION)) { outdated.current = true; setPhase("outdated"); return }
+        setConflict({ ...snap, context: operation })
         setPhase("idle")
       }
     } catch (err) {
+      if (!isCurrent(operation)) return
       setLastError(err instanceof Error ? err.message : String(err))
       setPhase("error")
     } finally {
       pushing.current = false
+      if (mounted.current && noticeWhilePushing.current) {
+        noticeWhilePushing.current = false
+        void checkRemote()
+      }
+      if (mounted.current && pushAgain.current) {
+        pushAgain.current = false
+        setTimeout(() => { if (mounted.current) void push() }, PUSH_DELAY)
+      }
     }
-
-    if (noticeWhilePushing.current) {
-      noticeWhilePushing.current = false
-      void checkRemote()
-    }
-    if (pushAgain.current) {
-      pushAgain.current = false
-      setTimeout(() => void push(), PUSH_DELAY)
-    }
-  }, [checkRemote, fetchSnapshot, patchLink, usableSections])
+  }, [capture, checkRemote, fetchSnapshot, isCurrent, patchLink, usableSections])
 
   // Cada edición real marca la empresa como pendiente y agenda la subida.
   const prev = useRef({ id: activeId, data })
   useEffect(() => {
     const before = prev.current
     prev.current = { id: activeId, data }
-    if (before.id !== activeId) return
-    if (applyingRemote.current) {
-      applyingRemote.current = false
+    if (before.id !== activeId) { applyingRemote.current = null; return }
+    if (applyingRemote.current === data) {
+      applyingRemote.current = null
       return
     }
+    applyingRemote.current = null
     if (!linksRef.current[activeId]) return
     if (onlyLocalFieldsChanged(before.data, data)) return
     if (accessRef.current && !api.canWrite(accessRef.current)) return
     edits.current++
-    if (!linksRef.current[activeId].dirty) patchLink(activeId, { dirty: true })
+    if (!linksRef.current[activeId].dirty) {
+      try { patchLink(activeId, { dirty: true }) }
+      catch (err) { setLastError(err instanceof Error ? err.message : String(err)); setPhase("error") }
+    }
   }, [activeId, data, patchLink])
 
   const dirty = link?.dirty ?? false
   useEffect(() => {
-    if (!dirty || !signedIn || conflict) return
+    if (!enabled || !persisted || !dirty || !signedIn || conflict) return
     const t = setTimeout(() => void push(), PUSH_DELAY)
     return () => clearTimeout(t)
-  }, [data, dirty, signedIn, conflict, push])
+  }, [data, dirty, signedIn, conflict, push, enabled, persisted])
 
   // Al abrir una empresa vinculada: ponerse al día y escuchar a los demás.
   /**
@@ -347,14 +412,17 @@ export function useCloud({
     const profileId = activeRef.current
     const current = linksRef.current[profileId]
     const a = accessRef.current
-    if (!current || !a || !api.canWrite(a) || !a.writesAll) return
+    if (!enabledRef.current || !current || !a || !api.canWrite(a) || !a.writesAll) return
     if (migrating.current) return
     if (countInlineAttachments(dataRef.current) === 0) return
 
     migrating.current = true
+    const operation = capture()
+    const base = dataRef.current
     try {
-      const res = await migrateAttachments(dataRef.current, current.companyId)
-      if (res.moved > 0 && activeRef.current === profileId) {
+      const res = await migrateAttachments(base, current.companyId)
+      if (!isCurrent(operation) || dataRef.current !== base) return
+      if (res.moved > 0) {
         // Cambian los datos, así que el guardado normal sube las rutas.
         setData(res.data)
         notify(
@@ -369,7 +437,7 @@ export function useCloud({
     } finally {
       migrating.current = false
     }
-  }, [notify, setData])
+  }, [capture, isCurrent, notify, setData])
 
   const companyId = link?.companyId ?? null
   // Hasta conocer el rango no se puede consultar: la empresa completa y las
@@ -382,7 +450,11 @@ export function useCloud({
   }, [companyId, signedIn])
 
   useEffect(() => {
-    if (!companyId || !signedIn || !accessKnown) return
+    setConflict(null)
+    conflictRef.current = null
+    outdated.current = false
+    setPhase("idle")
+    if (!enabled || !companyId || !signedIn || !accessKnown) return
     outdated.current = false
     setPhase("idle")
     void checkRemote()
@@ -403,7 +475,7 @@ export function useCloud({
       document.removeEventListener("visibilitychange", onFocus)
       window.removeEventListener("online", onOnline)
     }
-  }, [companyId, signedIn, accessKnown, checkRemote, push, moveInlineAttachments])
+  }, [activeId, companyId, email, enabled, signedIn, accessKnown, checkRemote, push, moveInlineAttachments])
 
   /* ------------------------------ Acciones ----------------------------- */
 
@@ -430,18 +502,22 @@ export function useCloud({
 
   /** Sube la empresa activa a la nube y la vincula. */
   const uploadActive = useCallback(async () => {
+    if (!enabledRef.current || !persistedRef.current) throw new api.CloudError("Primero deben guardarse los cambios en este equipo.")
+    const operation = capture()
     const profileId = activeRef.current
     const d = dataRef.current
     const created = await api.createCompany(d.companyName, d)
-    setLinks((prev) => ({ ...prev, [profileId]: { companyId: created.id, revision: created.revision, dirty: false } }))
+    if (!isCurrent(operation)) { await refreshCompanies(); return }
+    setLinks((prev) => ({ ...prev, [profileId]: { companyId: created.id, revision: created.revision, dirty: dataRef.current !== d } }))
     setAttachmentCompany(created.id)
     await refreshCompanies()
     await moveInlineAttachments()
-  }, [moveInlineAttachments, refreshCompanies, setLinks])
+  }, [capture, isCurrent, moveInlineAttachments, refreshCompanies, setLinks])
 
   /** Abre una empresa de la nube: la baja si este equipo no la tiene. */
   const openCompany = useCallback(
     async (companyIdToOpen: string) => {
+      const operation = capture()
       const existing = profileForCompany(linksRef.current, companyIdToOpen)
       if (existing) {
         switchProfile(existing)
@@ -457,13 +533,14 @@ export function useCloud({
       }
       const base: AppData = { ...defaultData, companyName: target.name }
       const snap = await fetchSnapshot(companyIdToOpen, a, base)
+      if (!isCurrent(operation)) return
       if (isFromNewerApp(snap.data, DATA_VERSION)) {
         throw new api.CloudError("Esta empresa se guardó con una versión más nueva de la app. Recarga la página.")
       }
-      const profileId = openAsNewProfile(normalizeData(snap.data))
+      const profileId = openAsNewProfile(decodeStoredData(JSON.stringify(snap.data)))
       setLinks((prev) => ({ ...prev, [profileId]: { companyId: companyIdToOpen, revision: snap.revision, dirty: false } }))
     },
-    [companies, fetchSnapshot, openAsNewProfile, setLinks, switchProfile, usableSections],
+    [capture, companies, fetchSnapshot, isCurrent, openAsNewProfile, setLinks, switchProfile, usableSections],
   )
 
   /** Deja de sincronizar la empresa activa; la copia local se conserva. */
@@ -493,29 +570,32 @@ export function useCloud({
   )
 
   const deleteActiveFromCloud = useCallback(async () => {
+    const operation = capture()
     const current = linksRef.current[activeRef.current]
     if (!current) return
     await api.deleteCompany(current.companyId)
-    unlinkActive()
+    if (isCurrent(operation)) unlinkActive()
     await refreshCompanies()
-  }, [refreshCompanies, unlinkActive])
+  }, [capture, isCurrent, refreshCompanies, unlinkActive])
 
   const resolveConflict = useCallback(
     (choice: "cloud" | "mine") => {
       const snap = conflictRef.current
       const profileId = activeRef.current
-      if (!snap) return
-      setConflict(null)
+      if (!snap || !isCurrent(snap.context)) { setConflict(null); return }
+      try {
       if (choice === "cloud") {
-        applySnapshot(snap, profileId)
+        applySnapshot(snap, snap.context)
         notify("Se cargó la versión de la nube")
       } else {
         // Se adopta la revisión remota como base y se sube lo local encima.
         patchLink(profileId, { revision: snap.revision, dirty: true })
         edits.current++
       }
+      setConflict(null)
+      } catch (err) { setLastError(err instanceof Error ? err.message : String(err)); setPhase("error") }
     },
-    [applySnapshot, notify, patchLink],
+    [applySnapshot, isCurrent, notify, patchLink],
   )
 
   /* ---------------------- Fusionar copia local y nube ---------------------- */
@@ -572,6 +652,9 @@ export function useCloud({
    */
   const mergeLocal = useCallback(
     async (profileId: string, companyIdToMerge: string, winner: "cloud" | "local") => {
+      if (!enabledRef.current || !persistedRef.current) throw new api.CloudError("Primero deben guardarse los cambios en este equipo.")
+      const operation = capture()
+      const dataAtStart = dataRef.current
       fullAccessCompany(companyIdToMerge)
       if (linksRef.current[profileId]) {
         throw new api.CloudError("Esa empresa de este equipo ya está vinculada a la nube.")
@@ -583,37 +666,46 @@ export function useCloud({
         )
       }
       const local = profileData(profileId)
+      const unchanged = () => {
+        if (!isCurrent(operation) || dataRef.current !== dataAtStart || linksRef.current[profileId] || (linkedId && linksRef.current[linkedId]?.dirty)) {
+          throw new api.CloudError("Los datos o la empresa activa cambiaron durante la fusión. Tus cambios locales se conservan; vuelve a revisar las versiones.")
+        }
+      }
       const prefer: MergeWinner = winner === "cloud" ? "current" : "incoming"
 
       // Si alguien guarda justo en medio, se vuelve a leer y a fusionar.
       for (let attempt = 0; attempt < 3; attempt++) {
         const snap = await api.fetchCompany(companyIdToMerge)
+        unchanged()
         if (isFromNewerApp(snap.data, DATA_VERSION)) {
           throw new api.CloudError("La nube tiene datos de una versión más nueva de la app. Recarga la página.")
         }
         const merged = mergeAppData(normalizeData(snap.data), local, prefer).data
         const res = await api.saveCompany(companyIdToMerge, merged.companyName, merged, snap.revision)
         if (!res.ok) continue
+        unchanged()
 
         const keepId = linkedId ?? profileId
         const dropId = linkedId ? profileId : null
-        setLinks((prev) => ({ ...prev, [keepId]: { companyId: companyIdToMerge, revision: res.revision, dirty: false } }))
         // Lo que se muestra ya es lo que está en la nube: no hay nada que subir.
-        if (keepId === activeRef.current) applyingRemote.current = true
-        adoptMerged(keepId, normalizeData(withLocalFields(merged, local)), dropId)
+        const adopted = normalizeData(withLocalFields(merged, local))
+        if (keepId === activeRef.current) applyingRemote.current = adopted
+        adoptMerged(keepId, adopted, dropId)
+        setLinks((prev) => ({ ...prev, [keepId]: { companyId: companyIdToMerge, revision: res.revision, dirty: false } }))
         await refreshCompanies()
         return
       }
       throw new api.CloudError("Alguien está guardando esta empresa ahora mismo. Intenta de nuevo en un momento.")
     },
-    [adoptMerged, fullAccessCompany, profileData, refreshCompanies, setLinks],
+    [adoptMerged, capture, fullAccessCompany, isCurrent, profileData, refreshCompanies, setLinks],
   )
 
   const retry = useCallback(() => {
+    if (storageBlocked.current) { notify("Descarga tus cambios y recarga para comprobar el almacenamiento.", "amber"); return }
     setPhase("idle")
     setLastError("")
     void checkRemote().then(() => push())
-  }, [checkRemote, push])
+  }, [checkRemote, notify, push])
 
   /* ------------------------------ Estado ------------------------------- */
 

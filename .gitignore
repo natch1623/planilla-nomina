@@ -12,4 +12,5 @@ logs/
 .claude-replay.*
 .tmp-*
 .claude/
+supabase/.temp/
 muestra_*.pdf

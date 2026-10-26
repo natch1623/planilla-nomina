@@ -90,12 +90,11 @@ describe("loadIndex", () => {
     expect(dataKeys()).toHaveLength(1)
   })
 
-  it("se recupera de un índice corrupto sin quedar sin perfiles", () => {
+  it("detiene el arranque y conserva un índice corrupto", () => {
     storage.set(INDEX_KEY, "{{ no es json")
-    const index = loadIndex()
-
-    expect(index.profiles).toHaveLength(1)
-    expect(index.activeId).toBeTruthy()
+    expect(() => loadIndex()).toThrow("índice")
+    expect(storage.get(INDEX_KEY)).toBe("{{ no es json")
+    expect(dataKeys()).toHaveLength(0)
   })
 
   it("reapunta el activo si señalaba a un perfil inexistente", () => {

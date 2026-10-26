@@ -4,6 +4,7 @@ import type { CompanyMember, CompanyRole, RoleDef } from "../cloud/client"
 import { sameCompanyName } from "../cloud/sync"
 import type { Cloud } from "../cloud/useCloud"
 import Icon from "./Icon"
+import CompanyHistory from "./CompanyHistory"
 import { MergeDialog, STATUS_INFO } from "./Nube"
 import { Button, Card, CardHeader, ConfirmDialog, Field, IconButton, inputClass } from "./ui"
 import type { Tone } from "./ui"
@@ -135,6 +136,7 @@ export default function NubePanel({
               onNotify={onNotify}
             />
           )}
+          {cloud.link && cloud.access?.managesMembers && cloud.access.readsAll && <CompanyHistory key={cloud.link.companyId} companyId={cloud.link.companyId} />}
 
           {cloud.link && (
             <div className="flex flex-wrap gap-2 pt-1">
@@ -180,7 +182,7 @@ export default function NubePanel({
       {confirm === "delete" && (
         <ConfirmDialog
           title="Eliminar de la nube"
-          message="Se borra la empresa de la nube para todos los miembros. En este equipo queda una copia local. No se puede deshacer."
+          message="La empresa dejará de aparecer para sus miembros. Los datos y su historial se conservan en la base para recuperación administrativa; en este equipo queda una copia local."
           confirmLabel="Eliminar de la nube"
           onConfirm={() => {
             setConfirm(null)

@@ -30,7 +30,7 @@ function dataWith(txAttachments: Attachment[], entryAttachments: Attachment[]): 
   return {
     ...defaultData,
     transactions: [{ id: "t1", attachments: txAttachments } as unknown as Transaction],
-    timeEntries: [{ id: "e1", attachments: entryAttachments } as unknown as TimeEntry],
+    timeEntries: [{ id: "e1", date: "2026-10-01", attachments: entryAttachments } as unknown as TimeEntry],
   }
 }
 

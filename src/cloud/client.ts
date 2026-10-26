@@ -238,8 +238,28 @@ export async function saveCompany(
 }
 
 export async function deleteCompany(id: string): Promise<void> {
-  const { error } = await sb().from("companies").delete().eq("id", id)
+  const { error } = await sb().rpc("delete_company", { p_company: id })
   if (error) fail(error)
+}
+
+export interface CompanyVersion {
+  revision: number
+  recordedAt: string
+  actorId: string | null
+  operation: string
+}
+
+export async function listCompanyVersions(id: string): Promise<CompanyVersion[]> {
+  const { data, error } = await sb().rpc("company_versions", { p_company: id })
+  if (error) fail(error)
+  return (data ?? []).map((v: any) => ({ revision: Number(v.revision), recordedAt: v.recorded_at, actorId: v.actor_id, operation: v.operation }))
+}
+
+export async function fetchCompanyVersion(id: string, revision: number): Promise<AppData> {
+  const { data, error } = await sb().rpc("company_version", { p_company: id, p_revision: revision })
+  if (error) fail(error)
+  if (!data) fail("Esa versión no está disponible.")
+  return data as AppData
 }
 
 /**

@@ -13,6 +13,7 @@ import {
   createProfile,
   createProfileWithData,
   deleteProfile,
+  exportJSON,
   getPeriodDates,
   loadIndex,
   loadProfileData,
@@ -23,8 +24,14 @@ import {
   saveProfileData,
   shiftPeriod,
   syncProfileName,
+  storageFailure,
 } from "./store"
+import { StorageFailure } from "./persistence"
+import StorageRecovery from "./components/StorageRecovery"
 import { calcPeriodSummaries, rulesFrom } from "./utils/calculations"
+import { payrollReportData } from "./utils/payrollClosure"
+import { overdueBills } from "./utils/fixedExpenses"
+import { todayISO } from "./utils/dates"
 import { useCloud } from "./cloud/useCloud"
 import { SECTIONS } from "./cloud/sections"
 import type { Section } from "./cloud/sections"
@@ -55,6 +62,7 @@ const Empleados = lazy(() => import("./components/Empleados"))
 const RegistroDiario = lazy(() => import("./components/RegistroDiario"))
 const Contabilidad = lazy(() => import("./components/Contabilidad"))
 const Costos = lazy(() => import("./components/Costos"))
+const Gastos = lazy(() => import("./components/Gastos"))
 const Configuracion = lazy(() => import("./components/Configuracion"))
 
 type Tab =
@@ -63,6 +71,7 @@ type Tab =
   | "registro"
   | "contabilidad"
   | "costos"
+  | "gastos"
   | "config"
 
 interface TabDef {
@@ -88,6 +97,7 @@ const TABS: TabDef[] = [
     icon: "receipt",
   },
   { id: "costos", label: "Caja", short: "Caja", icon: "building" },
+  { id: "gastos", label: "Gastos", short: "Gastos", icon: "bolt" },
   { id: "config", label: "Configuración", short: "Ajustes", icon: "settings" },
 ]
 
@@ -108,6 +118,8 @@ export default function App() {
   })
   const [index, setIndex] = useState<ProfileIndex>(boot.index)
   const [data, setData] = useState<AppData>(boot.data)
+  const [localSaved, setLocalSaved] = useState<AppData>(boot.data)
+  const [localError, setLocalError] = useState<StorageFailure | null>(null)
   const [tab, setTab] = useState<Tab>("dashboard")
   const accounting = data.accountingEnabled
   const tabs = useMemo(
@@ -127,16 +139,39 @@ export default function App() {
   // Sin esto el indicador "Guardado" parpadea al abrir la aplicación,
   // antes de que el usuario haya cambiado nada.
   const firstRender = useRef(true)
+  const lastSaved = useRef({ id: boot.index.activeId, data: boot.data })
 
   const activeId = index.activeId
+  const failLocal = useCallback((err: unknown) => {
+    setLocalError(err instanceof StorageFailure ? err : new StorageFailure("unavailable", err instanceof Error ? err.message : "No se pudo guardar en este equipo."))
+  }, [])
+  const persist = useCallback((id: string, value: AppData) => {
+    if (!saveProfileData(id, value)) { failLocal(storageFailure()); return false }
+    return true
+  }, [failLocal])
 
   useEffect(() => {
-    // El primer guardado va sin demora: normaliza en disco lo que se acaba de
-    // cargar, y todavía no hay nada que el usuario pueda perder esperando.
-    // También cubre el cambio de perfil, que reemplaza `data` de golpe.
+    const changed = (event: StorageEvent) => {
+      if (event.storageArea === localStorage && (event.key === null || event.key === `planilla_data_${activeId}` || event.key === "planilla_profiles" || event.key === "planilla_cloud_links")) {
+        failLocal(new StorageFailure("changed", "Otra pestaña modificó los datos de este equipo. Descarga tus cambios en memoria antes de recargar.", event.key ?? undefined))
+      }
+    }
+    window.addEventListener("storage", changed)
+    return () => window.removeEventListener("storage", changed)
+  }, [activeId, failLocal])
+
+  useEffect(() => {
+    if (localError) return
+    if (lastSaved.current.id === activeId && lastSaved.current.data === data) {
+      firstRender.current = false
+      setLocalSaved(data)
+      return
+    }
+    // Abrir una empresa nunca reescribe la copia que acabamos de leer.
     if (firstRender.current) {
       firstRender.current = false
-      saveProfileData(activeId, data)
+      lastSaved.current = { id: activeId, data }
+      setLocalSaved(data)
       return
     }
 
@@ -146,33 +181,37 @@ export default function App() {
      * sola escritura al frenar; el `beforeunload` cubre el caso de cerrar la
      * pestaña dentro de esa ventana.
      */
-    const flush = () => {
-      const ok = saveProfileData(activeId, data)
-      // El nombre del perfil es el de la empresa: si cambió, el selector tiene
-      // que reflejarlo sin obligar a recargar.
-      const renamed = syncProfileName(index, activeId, data.companyName)
-      if (renamed) setIndex(renamed)
+    const flush = (event?: Event) => {
+      const ok = persist(activeId, data)
       if (!ok) {
-        // Casi siempre es la cuota llena por comprobantes adjuntos. Callarlo
-        // dejaría al usuario trabajando sobre cambios que no se guardaron.
-        push(
-          "No se pudo guardar: almacenamiento lleno. Elimina adjuntos o exporta un respaldo.",
-          "danger",
-        )
+        if (event?.type === "beforeunload") { event.preventDefault(); (event as BeforeUnloadEvent).returnValue = "" }
         return
       }
+      // El nombre del perfil es el de la empresa: si cambió, el selector tiene
+      // que reflejarlo sin obligar a recargar.
+      let renamed: ProfileIndex | null
+      try { renamed = syncProfileName(index, activeId, data.companyName) }
+      catch (err) { failLocal(err); return }
+      if (renamed) setIndex(renamed)
+      setLocalSaved(data)
+      lastSaved.current = { id: activeId, data }
       setSavedFlash(true)
       hideFlash.current = setTimeout(() => setSavedFlash(false), 1400)
     }
 
     const timer = setTimeout(flush, 400)
     window.addEventListener("beforeunload", flush)
+    window.addEventListener("pagehide", flush)
+    const hidden = () => { if (document.visibilityState === "hidden") flush() }
+    document.addEventListener("visibilitychange", hidden)
     return () => {
       clearTimeout(timer)
       clearTimeout(hideFlash.current)
       window.removeEventListener("beforeunload", flush)
+      window.removeEventListener("pagehide", flush)
+      document.removeEventListener("visibilitychange", hidden)
     }
-  }, [data, activeId, index, push])
+  }, [data, activeId, index, localError, persist, failLocal])
 
   // El tema vive en `data-theme` sobre <html>; "sistema" se resuelve aquí.
   useEffect(() => {
@@ -208,11 +247,12 @@ export default function App() {
     const bump = (id: string) => counts.set(id, (counts.get(id) ?? 0) + 1)
     for (const entry of data.timeEntries) bump(entry.employeeId)
     for (const loan of data.loans) bump(loan.employeeId)
-    for (const period of data.closedPeriods) {
+    for (const adjustment of data.manualAdjustments) bump(adjustment.employeeId)
+    for (const period of [...data.closedPeriods, ...data.payrollArchives]) {
       for (const summary of period.summaries) bump(summary.employee.id)
     }
     return counts
-  }, [data.timeEntries, data.loans, data.closedPeriods])
+  }, [data.timeEntries, data.loans, data.manualAdjustments, data.closedPeriods, data.payrollArchives])
 
   const key = periodKey(data.currentPeriod)
   const closed = useMemo(
@@ -256,21 +296,25 @@ export default function App() {
   const switchProfile = useCallback(
     (id: string) => {
       if (id === activeId) return
-      saveProfileData(activeId, data)
+      if (!persist(activeId, data)) return
+      try {
+      const incoming = loadProfileData(id)
       const next = { ...index, activeId: id }
       saveIndex(next)
       setIndex(next)
-      setData(loadProfileData(id))
+      setData(incoming)
       setTab("dashboard")
       firstRender.current = true
       setProfileMenu(false)
+      } catch (err) { failLocal(err) }
     },
-    [activeId, data, index],
+    [activeId, data, index, persist, failLocal],
   )
 
   const addProfile = useCallback(
     (name: string) => {
-      saveProfileData(activeId, data)
+      if (!persist(activeId, data)) return
+      try {
       const created = createProfile(index, name)
       setIndex(created.index)
       setData(created.data)
@@ -278,14 +322,15 @@ export default function App() {
       firstRender.current = true
       setProfileMenu(false)
       push(`Perfil «${name}» creado`)
+      } catch (err) { failLocal(err) }
     },
-    [activeId, data, index, push],
+    [activeId, data, index, push, persist, failLocal],
   )
 
   /** Abre como perfil nuevo una empresa bajada de la nube. */
   const openAsNewProfile = useCallback(
     (incoming: AppData) => {
-      saveProfileData(activeId, data)
+      if (!persist(activeId, data)) throw storageFailure()!
       const created = createProfileWithData(index, incoming)
       setIndex(created.index)
       setData(created.data)
@@ -305,8 +350,9 @@ export default function App() {
   const forgetProfiles = useCallback(
     (ids: string[]) => {
       if (ids.length === 0) return
+      try {
       const gone = new Set(ids)
-      if (!gone.has(activeId)) saveProfileData(activeId, data)
+      if (!gone.has(activeId) && !persist(activeId, data)) return
       let next = index
       if (next.profiles.every((p) => gone.has(p.id))) {
         next = createProfile(next, "").index
@@ -318,8 +364,9 @@ export default function App() {
       setData(loadProfileData(next.activeId))
       setTab("dashboard")
       firstRender.current = true
+      } catch (err) { failLocal(err) }
     },
-    [activeId, data, index],
+    [activeId, data, index, persist, failLocal],
   )
 
   /**
@@ -328,9 +375,15 @@ export default function App() {
    */
   const adoptMerged = useCallback(
     (keepId: string, merged: AppData, dropId: string | null) => {
-      if (activeId !== keepId && activeId !== dropId) saveProfileData(activeId, data)
-      let next = dropId ? (deleteProfile(index, dropId) ?? index) : index
-      saveProfileData(keepId, merged)
+      if (activeId !== keepId && activeId !== dropId && !persist(activeId, data)) throw storageFailure()!
+      // Conservar el perfil origen hasta que destino e índice estén guardados.
+      if (keepId !== activeId) loadProfileData(keepId)
+      if (!saveProfileData(keepId, merged, "cloud")) {
+        const err = storageFailure()!
+        failLocal(err)
+        throw err
+      }
+      let next = index
       next = {
         activeId: keepId,
         profiles: next.profiles.map((p) =>
@@ -338,6 +391,7 @@ export default function App() {
         ),
       }
       saveIndex(next)
+      if (dropId) next = deleteProfile(next, dropId) ?? next
       if (keepId !== activeId) {
         firstRender.current = true
         setTab("dashboard")
@@ -346,10 +400,13 @@ export default function App() {
       setData(merged)
       setProfileMenu(false)
     },
-    [activeId, data, index],
+    [activeId, data, index, persist, failLocal],
   )
 
   const cloud = useCloud({
+    onStorageError: failLocal,
+    enabled: localError === null,
+    persisted: localSaved === data,
     activeId,
     data,
     setData,
@@ -368,6 +425,11 @@ export default function App() {
    * recortados desde la nube, sin salarios.
    */
   const restricted = cloud.restricted
+  // Sin nube no hay rangos: quien usa la app es el dueño. Con nube, solo el
+  // rango que administra la empresa.
+  const isAdmin = !cloud.access || cloud.access.managesMembers
+  // Solo lectura ve la empresa completa pero no la modifica.
+  const readOnlyAll = cloud.access !== null && !cloud.access.writesAll
   const shownTabs = useMemo(() => {
     if (!restricted || !cloud.access) return tabs
     const allowed = new Set<string>(cloud.access.sections.map((s) => SECTIONS[s].tab))
@@ -378,9 +440,40 @@ export default function App() {
   const activeTab: Tab = shownTabs.some((t) => t.id === baseTab)
     ? baseTab
     : shownTabs[0].id
+  // Gastos fijos va por mes y tiene su propio selector: la quincena de
+  // nómina ahí solo competiría con él y lo contradiría.
+  const usesPayPeriod = activeTab !== "gastos"
+
+  // Facturas vencidas sin pagar, de cualquier mes: el número va en la
+  // pestaña para que se vea sin tener que entrar a buscarlo.
+  const overdueServices = useMemo(
+    () => overdueBills(data.fixedExpenses, data.fixedExpensePayments, todayISO()).length,
+    [data.fixedExpenses, data.fixedExpensePayments],
+  )
+
+  /**
+   * En el celular las pestañas no caben y el carril se desplaza; sin esto la
+   * activa puede quedar fuera de la pantalla y uno no sabe dónde está. Se
+   * mueve solo el carril: `scrollIntoView` arrastraría también la página.
+   */
+  const navRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const nav = navRef.current
+    const el = nav?.querySelector<HTMLElement>('[aria-current="page"]')
+    if (!nav || !el) return
+    const navBox = nav.getBoundingClientRect()
+    const elBox = el.getBoundingClientRect()
+    if (elBox.left >= navBox.left && elBox.right <= navBox.right) return
+    nav.scrollTo({
+      left: nav.scrollLeft + elBox.left - navBox.left - (navBox.width - elBox.width) / 2,
+      behavior: "smooth",
+    })
+  }, [activeTab])
 
   const removeProfile = useCallback(
     (id: string) => {
+      try {
+      if (id !== activeId && !persist(activeId, data)) return
       const next = deleteProfile(index, id)
       if (!next) {
         push("No se puede eliminar el único perfil", "amber")
@@ -395,8 +488,9 @@ export default function App() {
       }
       firstRender.current = true
       push("Perfil eliminado", "danger")
+      } catch (err) { failLocal(err) }
     },
-    [activeId, index, push, cloud.forgetLink],
+    [activeId, data, index, push, cloud.forgetLink, persist, failLocal],
   )
 
   const { start, end } = getPeriodDates(data.currentPeriod)
@@ -405,6 +499,8 @@ export default function App() {
 
   async function runExport(kind: ExportKind) {
     setExportMenu(false)
+    const report = payrollReportData(data)
+    const reportRules = rulesFrom(report)
 
     try {
       // Los reportes financieros no dependen de la planilla del período: viven
@@ -428,21 +524,21 @@ export default function App() {
 
       if (kind === "excel") {
         const { exportToExcel } = await import("./utils/exportExcel")
-        exportToExcel(summaries, data.currentPeriod, data.timeEntries, rules)
+        exportToExcel(summaries, data.currentPeriod, report.timeEntries, reportRules)
         push("Excel descargado")
       } else if (kind === "pdf") {
         const { exportToPDF } = await import("./utils/exportPDF")
-        exportToPDF(summaries, data.currentPeriod, data.companyName)
+        exportToPDF(summaries, data.currentPeriod, report.companyName)
         push("PDF descargado")
       } else {
         const { exportAllPayslips } = await import("./utils/exportPayslip")
         exportAllPayslips(
           summaries,
           data.currentPeriod,
-          data.companyName,
-          data.timeEntries,
-          data.manualAdjustments,
-          rules,
+          report.companyName,
+          report.timeEntries,
+          report.manualAdjustments,
+          reportRules,
         )
         push(`${summaries.length} comprobantes descargados`)
       }
@@ -453,6 +549,13 @@ export default function App() {
       push("No se pudo generar el archivo. Intenta de nuevo.", "danger")
     }
   }
+
+  if (localError) return <>
+    <div className="fixed top-0 inset-x-0 z-50 p-3 bg-surface border-b border-line text-center">
+      <button className="px-4 py-3 bg-brand text-brand-fg rounded-xl font-bold" onClick={() => exportJSON(data)}>Descargar cambios en memoria</button>
+    </div>
+    <div className="pt-20"><StorageRecovery error={localError} /></div>
+  </>
 
   return (
     <div className="min-h-screen bg-app">
@@ -593,11 +696,13 @@ export default function App() {
               )}
             </div>
 
-            <PeriodNav
-              period={data.currentPeriod}
-              onChange={setPeriod}
-              locked={!!closed}
-            />
+            {usesPayPeriod && (
+              <PeriodNav
+                period={data.currentPeriod}
+                onChange={setPeriod}
+                locked={!!closed}
+              />
+            )}
 
             <div className="flex-1" />
 
@@ -609,7 +714,7 @@ export default function App() {
                 aria-hidden={!savedFlash}
               >
                 <Icon name="check" className="w-3.5 h-3.5" />
-                Guardado
+                Guardado en este equipo
               </span>
 
               {cloud.available && <CloudButton cloud={cloud} onNotify={push} />}
@@ -687,6 +792,7 @@ export default function App() {
 
           {/* Fila 2: navegación principal */}
           <nav
+            ref={navRef}
             className="flex items-center gap-1 -mb-px overflow-x-auto"
             aria-label="Secciones"
           >
@@ -704,6 +810,14 @@ export default function App() {
                 <Icon name={t.icon} className="w-4 h-4 shrink-0" />
                 <span className="sm:hidden">{t.short}</span>
                 <span className="hidden sm:block">{t.label}</span>
+                {t.id === "gastos" && overdueServices > 0 && (
+                  <span
+                    className="ml-0.5 px-1.5 rounded-full bg-danger text-white text-[10px]"
+                    aria-label={`${overdueServices} ${overdueServices === 1 ? "pago vencido" : "pagos vencidos"}`}
+                  >
+                    {overdueServices}
+                  </span>
+                )}
               </button>
             ))}
           </nav>
@@ -712,7 +826,7 @@ export default function App() {
 
       <CloudBanner cloud={cloud} />
 
-      {closed && (
+      {closed && usesPayPeriod && (
         <div className="bg-amber-soft border-b border-line">
           <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-2 text-xs font-semibold text-amber">
             <Icon name="lock" className="w-4 h-4 shrink-0" />
@@ -783,7 +897,15 @@ export default function App() {
               // ningún rol restringido de por medio: se trata igual que un
               // administrador. Solo una cuenta de rango limitado (p. ej. la
               // "costos" compartida por estación) no lo es.
-              isAdmin={!cloud.access || cloud.access.managesMembers}
+              isAdmin={isAdmin}
+              onChange={(patch) => setData((d) => ({ ...d, ...patch }))}
+              onNotify={push}
+            />
+          )}
+          {activeTab === "gastos" && (
+            <Gastos
+              data={data}
+              readOnly={readOnlyAll}
               onChange={(patch) => setData((d) => ({ ...d, ...patch }))}
               onNotify={push}
             />
@@ -815,8 +937,12 @@ export default function App() {
       </main>
 
       <footer className="max-w-7xl mx-auto px-4 pb-8 text-[11px] text-subtle">
-        Período {start} — {end} · {MONTHS_ES[data.currentPeriod.month - 1]}{" "}
-        {data.currentPeriod.year} ·{" "}
+        {usesPayPeriod && (
+          <>
+            Período {start} — {end} · {MONTHS_ES[data.currentPeriod.month - 1]}{" "}
+            {data.currentPeriod.year} ·{" "}
+          </>
+        )}
         {cloud.link
           ? "Los datos se guardan en este navegador y en la nube."
           : "Los datos se guardan en este navegador. Exporta un respaldo JSON con regularidad."}

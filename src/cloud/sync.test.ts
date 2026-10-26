@@ -97,14 +97,16 @@ describe("vínculos con la nube", () => {
     expect(readLinks()).toEqual({ p1: { companyId: "c1", revision: 3, dirty: true } })
   })
 
-  it("descarta entradas corruptas en vez de romper la app", () => {
+  it("conserva vínculos dañados y bloquea la sincronización", () => {
     localStorage.setItem(
       "planilla_cloud_links",
       JSON.stringify({ ok: { companyId: "c1", revision: 2 }, malo: { revision: 1 }, nulo: null }),
     )
-    expect(readLinks()).toEqual({ ok: { companyId: "c1", revision: 2, dirty: false } })
+    expect(() => readLinks()).toThrow("vínculos")
+    expect(localStorage.getItem("planilla_cloud_links")).toContain('"malo"')
     localStorage.setItem("planilla_cloud_links", "{no es json")
-    expect(readLinks()).toEqual({})
+    expect(() => readLinks()).toThrow("vínculos")
+    expect(localStorage.getItem("planilla_cloud_links")).toBe("{no es json")
   })
 
   it("encuentra el perfil local de una empresa", () => {

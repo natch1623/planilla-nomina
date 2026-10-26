@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { Attachment } from "../types"
 import {
   attachmentUrl,
@@ -118,6 +118,7 @@ export function AttachmentPicker({
   max,
   current,
   accept = "image/*,application/pdf",
+  label = "Adjuntar archivo",
   onAdd,
   onNotify,
 }: {
@@ -126,9 +127,12 @@ export function AttachmentPicker({
   max: number
   current: number
   accept?: string
+  /** Texto del botón; mejor si dice qué se adjunta ("Agregar foto del recibo"). */
+  label?: string
   onAdd: (added: Attachment[]) => void
   onNotify: (text: string, tone?: Tone) => void
 }) {
+  const fileInput = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [linking, setLinking] = useState(false)
   const [url, setUrl] = useState("")
@@ -167,14 +171,39 @@ export function AttachmentPicker({
 
   return (
     <div className="space-y-2">
+      {/*
+        El control nativo ("Elegir archivos · Ningún archivo seleccionado")
+        no se puede estilizar ni traducir del todo, y se veía ajeno al resto.
+        Queda oculto y lo abre un botón propio. En el celular, `image/*`
+        ofrece también la cámara.
+      */}
       <input
+        ref={fileInput}
         type="file"
         multiple
         accept={accept}
         disabled={busy || current >= max}
         onChange={(e) => void handleFiles(e.target.files, e.target)}
-        className="block w-full text-xs text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-raised file:text-fg file:font-semibold file:cursor-pointer disabled:opacity-50"
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
       />
+      <div className="flex items-center gap-x-3 gap-y-1 flex-wrap">
+        <Button
+          icon={busy ? "clock" : "paperclip"}
+          disabled={busy || current >= max}
+          onClick={() => fileInput.current?.click()}
+          className="min-h-11 sm:min-h-0"
+        >
+          {busy ? "Subiendo…" : label}
+        </Button>
+        <span className="text-[11px] text-muted">
+          Foto o PDF, hasta{" "}
+          {inCloud
+            ? `${Math.round(MAX_CLOUD_BYTES / 1024 / 1024)} MB`
+            : `${Math.round(MAX_LOCAL_BYTES / 1024)} KB`}
+        </span>
+      </div>
 
       {linking ? (
         <div className="flex flex-col sm:flex-row gap-2">
@@ -215,19 +244,13 @@ export function AttachmentPicker({
           type="button"
           onClick={() => setLinking(true)}
           disabled={current >= max}
-          className="text-xs font-semibold text-brand hover:underline disabled:opacity-50"
+          className="text-xs font-semibold text-brand hover:underline disabled:opacity-50 min-h-8"
         >
           o pegar el enlace de un documento
         </button>
       )}
-
-      <p className="text-[11px] text-subtle">
-        {busy
-          ? "Subiendo…"
-          : inCloud
-            ? `Se guardan en la nube y los ve el resto del equipo. Hasta ${Math.round(MAX_CLOUD_BYTES / 1024 / 1024)} MB por archivo.`
-            : `Se guardan en este navegador hasta que la empresa se suba a la nube. Hasta ${Math.round(MAX_LOCAL_BYTES / 1024)} KB por archivo.`}
-      </p>
+      {/* Dónde queda el archivo ya no se explica aquí: si se guarda solo en
+          este navegador, lo avisa un mensaje al adjuntarlo. */}
     </div>
   )
 }

@@ -9,15 +9,21 @@ import type {
   CostTemplate,
   Counterparty,
   CounterpartyKind,
+  DailyExpense,
   DayType,
   Employee,
   FinancialGoal,
+  FixedExpense,
+  FixedExpenseFrequency,
+  FixedExpensePause,
+  FixedExpensePayment,
   GoalKind,
   Loan,
   PayrollAdjustment,
   PayrollAdjustmentKind,
   PayPeriod,
   PaymentMethod,
+  SupplierPayment,
   PaymentType,
   Recurrence,
   TimeEntry,
@@ -26,9 +32,12 @@ import type {
   TransactionType,
   WeeklySchedule,
 } from "./types"
+import { readStored, StorageFailure, writeStored } from "./persistence"
+import { assertPayrollIntegrity } from "./utils/payrollClosure"
 
 const STORAGE_KEY = "planilla_data"
-export const DATA_VERSION = 14
+// v16: gastos fijos. Una app anterior los descartaría al guardar.
+export const DATA_VERSION = 16
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const TIME_RE = /^\d{2}:\d{2}$/
@@ -53,6 +62,7 @@ export const defaultData: AppData = {
   payHolidays: true,
   paySickLeave: false,
   closedPeriods: [],
+  payrollArchives: [],
   manualAdjustments: [],
   transactions: [],
   counterparties: [],
@@ -63,6 +73,11 @@ export const defaultData: AppData = {
   costTemplates: [],
   costOperators: [],
   costCashCounts: [],
+  fixedExpenses: [],
+  fixedExpensePayments: [],
+  dailyExpenses: [],
+  supplierPayments: [],
+  expenseSettings: { dailyToAccounting: false, suppliersToAccounting: false },
   openingBalance: 0,
   openingBalanceDate: "",
   accountingEnabled: true,
@@ -474,6 +489,138 @@ function normalizeCostCashCount(raw: any): CostCashCount | null {
   }
 }
 
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/
+const FREQUENCIES: FixedExpenseFrequency[] = [1, 2, 3, 6, 12]
+
+/**
+ * Clave que hace único a un pago: el que salda un mes es uno solo por
+ * servicio y mes (dos copias fusionadas no lo duplican); los abonos pueden
+ * ser varios y se distinguen por su id.
+ */
+export function fixedPaymentKey(p: FixedExpensePayment): string {
+  return p.partial ? p.id : `${p.expenseId}__${p.month}`
+}
+
+function normalizeFixedExpense(raw: any): FixedExpense | null {
+  if (!raw || typeof raw !== "object") return null
+  const name = str(raw.name).trim()
+  if (!name) return null
+  const dueDay = Math.round(num(raw.dueDay, 0))
+  const active = bool(raw.active, true)
+  const pauses: FixedExpensePause[] = Array.isArray(raw.pauses)
+    ? raw.pauses
+        .filter((p: any) => p && MONTH_RE.test(str(p.from)))
+        .map((p: any) => ({
+          from: p.from,
+          to: MONTH_RE.test(str(p.to)) && p.to > p.from ? p.to : "",
+        }))
+    : []
+  // Una sola baja abierta, y solo si el servicio está de baja: lo que diga
+  // `active` manda. Los dados de baja antes de existir `pauses` quedan de
+  // baja desde este mes, que es lo que se veía hasta ahora.
+  const closed = pauses.filter((p) => p.to)
+  const open = pauses.find((p) => !p.to)
+  return {
+    id: str(raw.id) || crypto.randomUUID(),
+    name,
+    provider: str(raw.provider),
+    accountNumber: str(raw.accountNumber),
+    estimatedAmount: Math.max(0, num(raw.estimatedAmount, 0)),
+    dueDay: dueDay >= 1 && dueDay <= 31 ? dueDay : 0,
+    frequency: FREQUENCIES.includes(raw.frequency) ? raw.frequency : 1,
+    recordInAccounting: bool(raw.recordInAccounting, false),
+    startMonth: MONTH_RE.test(str(raw.startMonth))
+      ? raw.startMonth
+      : todayMonth(),
+    notes: str(raw.notes),
+    active,
+    pauses: active ? closed : [...closed, open ?? { from: todayMonth(), to: "" }],
+  }
+}
+
+function normalizeFixedExpensePayment(
+  raw: any,
+  expenseIds: Set<string>,
+): FixedExpensePayment | null {
+  if (!raw || typeof raw !== "object") return null
+  const expenseId = str(raw.expenseId)
+  const month = str(raw.month)
+  const amount = num(raw.amount, NaN)
+  if (!expenseIds.has(expenseId) || !MONTH_RE.test(month)) return null
+  if (!Number.isFinite(amount) || amount < 0) return null
+  return {
+    id: str(raw.id) || crypto.randomUUID(),
+    expenseId,
+    month,
+    amount,
+    partial: raw.partial === true,
+    transactionId: str(raw.transactionId),
+    paidOn: DATE_RE.test(str(raw.paidOn)) ? raw.paidOn : `${month}-01`,
+    paymentMethod: PAYMENT_METHODS.includes(raw.paymentMethod)
+      ? raw.paymentMethod
+      : "transferencia",
+    reference: str(raw.reference),
+    notes: str(raw.notes),
+    attachments: normalizeAttachments(raw.attachments),
+    createdAt: Number.isNaN(Date.parse(str(raw.createdAt))) ? "" : str(raw.createdAt),
+  }
+}
+
+const createdAtOf = (raw: any) =>
+  Number.isNaN(Date.parse(str(raw.createdAt))) ? "" : str(raw.createdAt)
+
+const methodOf = (raw: any): PaymentMethod =>
+  PAYMENT_METHODS.includes(raw.paymentMethod) ? raw.paymentMethod : "efectivo"
+
+function normalizeDailyExpense(raw: any): DailyExpense | null {
+  if (!raw || typeof raw !== "object") return null
+  const date = str(raw.date)
+  const amount = num(raw.amount, NaN)
+  if (!DATE_RE.test(date) || !Number.isFinite(amount) || amount <= 0) return null
+  return {
+    id: str(raw.id) || crypto.randomUUID(),
+    date,
+    category: str(raw.category).trim() || "Otros",
+    amount,
+    paymentMethod: methodOf(raw),
+    paidBy: str(raw.paidBy),
+    notes: str(raw.notes),
+    attachments: normalizeAttachments(raw.attachments),
+    transactionId: str(raw.transactionId),
+    createdAt: createdAtOf(raw),
+  }
+}
+
+function normalizeSupplierPayment(raw: any): SupplierPayment | null {
+  if (!raw || typeof raw !== "object") return null
+  const date = str(raw.date)
+  const amount = num(raw.amount, NaN)
+  const supplierName = str(raw.supplierName).trim()
+  if (!DATE_RE.test(date) || !supplierName || !Number.isFinite(amount) || amount <= 0) return null
+  return {
+    id: str(raw.id) || crypto.randomUUID(),
+    date,
+    supplierName,
+    taxId: str(raw.taxId).trim(),
+    dv: str(raw.dv).trim(),
+    concept: str(raw.concept),
+    invoiceNumber: str(raw.invoiceNumber),
+    amount,
+    // El impuesto no puede ser mayor que el total.
+    itbms: Math.min(amount, Math.max(0, num(raw.itbms, 0))),
+    paymentMethod: methodOf(raw),
+    notes: str(raw.notes),
+    attachments: normalizeAttachments(raw.attachments),
+    transactionId: str(raw.transactionId),
+    createdAt: createdAtOf(raw),
+  }
+}
+
+function todayMonth(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+}
+
 function normalizePeriod(raw: any): PayPeriod {
   if (!raw || typeof raw !== "object") return defaultPeriod
   const year = Math.round(num(raw.year, defaultPeriod.year))
@@ -596,6 +743,35 @@ export function normalizeData(raw: any): AppData {
         .filter((s: CostCashCount | null): s is CostCashCount => s !== null)
     : []
 
+  const fixedExpenses: FixedExpense[] = Array.isArray(raw.fixedExpenses)
+    ? raw.fixedExpenses
+        .map(normalizeFixedExpense)
+        .filter((f: FixedExpense | null): f is FixedExpense => f !== null)
+    : []
+  const fixedExpenseIds = new Set(fixedExpenses.map((f) => f.id))
+
+  // Un solo pago que salde cada servicio y mes: si llegaran dos (p. ej. tras
+  // fusionar dos copias), se queda el último. Los abonos pueden ser varios.
+  const fixedPaymentMap = new Map<string, FixedExpensePayment>()
+  if (Array.isArray(raw.fixedExpensePayments)) {
+    for (const r of raw.fixedExpensePayments) {
+      const p = normalizeFixedExpensePayment(r, fixedExpenseIds)
+      if (p) fixedPaymentMap.set(fixedPaymentKey(p), p)
+    }
+  }
+
+  const dailyExpenses: DailyExpense[] = Array.isArray(raw.dailyExpenses)
+    ? raw.dailyExpenses
+        .map(normalizeDailyExpense)
+        .filter((d: DailyExpense | null): d is DailyExpense => d !== null)
+    : []
+
+  const supplierPayments: SupplierPayment[] = Array.isArray(raw.supplierPayments)
+    ? raw.supplierPayments
+        .map(normalizeSupplierPayment)
+        .filter((s: SupplierPayment | null): s is SupplierPayment => s !== null)
+    : []
+
   const theme =
     raw.theme === "light" || raw.theme === "dark" ? raw.theme : "system"
 
@@ -610,6 +786,8 @@ export function normalizeData(raw: any): AppData {
     payHolidays: bool(raw.payHolidays, true),
     paySickLeave: bool(raw.paySickLeave, false),
     closedPeriods,
+    payrollArchives: Array.isArray(raw.payrollArchives) && raw.payrollArchives.length
+      ? normalizeData({ employees: [], timeEntries: [], closedPeriods: raw.payrollArchives }).closedPeriods : [],
     manualAdjustments,
     transactions,
     counterparties,
@@ -620,6 +798,14 @@ export function normalizeData(raw: any): AppData {
     costTemplates,
     costOperators,
     costCashCounts,
+    fixedExpenses,
+    fixedExpensePayments: [...fixedPaymentMap.values()],
+    dailyExpenses,
+    supplierPayments,
+    expenseSettings: {
+      dailyToAccounting: bool(raw.expenseSettings?.dailyToAccounting, false),
+      suppliersToAccounting: bool(raw.expenseSettings?.suppliersToAccounting, false),
+    },
     openingBalance: num(raw.openingBalance, 0),
     openingBalanceDate: DATE_RE.test(str(raw.openingBalanceDate))
       ? raw.openingBalanceDate
@@ -673,32 +859,28 @@ function newProfileId(): string {
 }
 
 function readIndex(): ProfileIndex | null {
-  try {
-    const raw = localStorage.getItem(INDEX_KEY)
-    if (!raw) return null
+    const raw = readStored(INDEX_KEY)
+    if (raw === null) return null
+    try {
     const parsed = JSON.parse(raw)
     if (!parsed || !Array.isArray(parsed.profiles) || parsed.profiles.length === 0) {
-      return null
+      throw new Error("Índice incompleto")
     }
     const profiles: ProfileMeta[] = parsed.profiles
       .filter((p: any) => p && typeof p.id === "string" && p.id)
       .map((p: any) => ({ id: p.id, name: str(p.name) }))
-    if (profiles.length === 0) return null
+    if (profiles.length !== parsed.profiles.length || new Set(profiles.map(p => p.id)).size !== profiles.length) throw new Error("Perfiles inválidos")
     const activeId = profiles.some((p) => p.id === parsed.activeId)
       ? parsed.activeId
       : profiles[0].id
     return { activeId, profiles }
   } catch {
-    return null
+    throw new StorageFailure("corrupt", "El índice de empresas no se puede leer. Conservamos la copia original para recuperarla.", INDEX_KEY)
   }
 }
 
 export function saveIndex(index: ProfileIndex): void {
-  try {
-    localStorage.setItem(INDEX_KEY, JSON.stringify(index))
-  } catch (err) {
-    console.error("No se pudo guardar el índice de perfiles", err)
-  }
+  writeStored(INDEX_KEY, JSON.stringify(index), true)
 }
 
 /**
@@ -713,41 +895,77 @@ export function loadIndex(): ProfileIndex {
   const existing = readIndex()
   if (existing) return existing
 
+  // Un índice perdido no significa que hayan desaparecido sus empresas.
+  for (let i = 0; i < localStorage.length; i++) {
+    if (localStorage.key(i)?.startsWith(DATA_PREFIX)) {
+      throw new StorageFailure("missing", "Falta el índice, pero hay empresas guardadas que se pueden recuperar.", INDEX_KEY)
+    }
+  }
+
   const id = newProfileId()
   let initial: AppData = { ...defaultData }
 
-  try {
-    const legacy = localStorage.getItem(STORAGE_KEY)
-    if (legacy) {
-      initial = normalizeData(JSON.parse(legacy))
-      localStorage.removeItem(STORAGE_KEY)
-    }
-  } catch (err) {
-    console.error("No se pudo migrar los datos al primer perfil", err)
-  }
+  const legacy = readStored(STORAGE_KEY)
+  if (legacy !== null) initial = decodeStoredData(legacy, STORAGE_KEY)
 
   // Todo perfil del índice tiene su entrada de datos desde el principio, venga
   // de una migración o de una instalación nueva. Dejarla para el primer
   // guardado abriría un hueco donde el índice apunta a algo que no existe.
-  saveProfileData(id, initial)
+  if (!saveProfileData(id, initial)) throw lastStorageFailure!
 
   const index: ProfileIndex = {
     activeId: id,
     profiles: [{ id, name: initial.companyName }],
   }
   saveIndex(index)
+  // Comprobar las dos escrituras antes de retirar el único original.
+  if (localStorage.getItem(dataKey(id)) !== JSON.stringify(initial)) {
+    throw new StorageFailure("unavailable", "No se pudo verificar la migración. El original se conserva.", STORAGE_KEY)
+  }
+  if (legacy !== null) localStorage.removeItem(STORAGE_KEY)
   return index
 }
 
-export function loadProfileData(id: string): AppData {
+/** Normalizar nunca debe descartar silenciosamente registros persistidos. */
+export function decodeStoredData(raw: string, key?: string): AppData {
   try {
-    const raw = localStorage.getItem(dataKey(id))
-    if (!raw) return { ...defaultData }
-    return normalizeData(JSON.parse(raw))
-  } catch {
-    return { ...defaultData }
+    const value = JSON.parse(raw)
+    if (!value || Array.isArray(value) || !Array.isArray(value.employees) || !Array.isArray(value.timeEntries)) throw new Error("Documento incompleto")
+    if (value.version !== undefined && (!Number.isSafeInteger(value.version) || value.version < 1)) throw new Error("Versión inválida")
+    if (typeof value.version === "number" && value.version > DATA_VERSION) {
+      throw new StorageFailure("newer", "Estos datos requieren una versión más reciente de la aplicación. Recarga la página.", key)
+    }
+    const data = normalizeData(value)
+    for (const closure of [...data.closedPeriods, ...data.payrollArchives]) {
+      const p = closure.period
+      if (!p || !Number.isInteger(p.year) || !Number.isInteger(p.month) || p.month < 1 || p.month > 12 || (p.half !== 1 && p.half !== 2)) throw new Error("Periodo de cierre inválido")
+      if (closure.snapshot && ["employees","timeEntries","manualAdjustments","loans"].some(k => !Array.isArray((closure.snapshot as any)[k]))) throw new Error("Datos del cierre incompletos")
+    }
+    for (const field of Object.keys(defaultData) as (keyof AppData)[]) {
+      if (!Array.isArray(defaultData[field]) || value[field] === undefined) continue
+      if (!Array.isArray(value[field]) || value[field].length !== (data[field] as unknown[]).length) throw new Error(`Registros inválidos en ${field}`)
+    }
+    for (const field of ["timeEntries", "transactions"] as const) {
+      value[field]?.forEach((item: any, i: number) => {
+        if (item.attachments !== undefined && (!Array.isArray(item.attachments) || item.attachments.length !== data[field][i].attachments.length)) throw new Error("Adjuntos inválidos")
+      })
+    }
+    return data
+  } catch (err) {
+    if (err instanceof StorageFailure) throw err
+    throw new StorageFailure("corrupt", "No se pueden leer todos los registros de esta empresa. La copia original se conserva.", key)
   }
 }
+
+export function loadProfileData(id: string): AppData {
+  const key = dataKey(id)
+  const raw = readStored(key)
+  if (raw === null) throw new StorageFailure("missing", "Faltan los datos de esta empresa en el equipo. Recupera un respaldo o su copia de la nube.", key)
+  return decodeStoredData(raw, key)
+}
+
+let lastStorageFailure: StorageFailure | null = null
+export function storageFailure(): StorageFailure | null { return lastStorageFailure }
 
 /**
  * Devuelve `false` cuando el navegador rechaza guardar (casi siempre por cuota
@@ -755,12 +973,23 @@ export function loadProfileData(id: string): AppData {
  * y el usuario tiene que enterarse: si no, seguiría trabajando creyendo que sus
  * cambios quedaron guardados.
  */
-export function saveProfileData(id: string, data: AppData): boolean {
+export function saveProfileData(id: string, data: AppData, source: "local" | "cloud" = "local"): boolean {
   try {
-    localStorage.setItem(dataKey(id), JSON.stringify(data))
+    const serialized = JSON.stringify(data)
+    decodeStoredData(serialized, dataKey(id))
+    const previous = localStorage.getItem(dataKey(id))
+    if (previous !== null) {
+      const raw = JSON.parse(previous)
+      // Una descarga autorizada puede ser una proyección sin salarios/archivos.
+      // Su integridad ya la comprobó el servidor; el contexto y las ediciones
+      // concurrentes se comprueban antes de llegar aquí, en useCloud.
+      if (source === "local" && (raw.closedPeriods?.length || raw.payrollArchives?.length)) assertPayrollIntegrity(decodeStoredData(previous), data)
+    }
+    writeStored(dataKey(id), serialized, true)
+    lastStorageFailure = null
     return true
   } catch (err) {
-    console.error("No se pudo guardar en localStorage", err)
+    lastStorageFailure = err instanceof StorageFailure ? err : new StorageFailure("unavailable", err instanceof Error ? err.message : "No se pudo guardar.", dataKey(id))
     return false
   }
 }
@@ -796,7 +1025,7 @@ export function createProfile(
 ): CreatedProfile {
   const id = newProfileId()
   const data: AppData = { ...defaultData, companyName: name.trim() }
-  saveProfileData(id, data)
+  if (!saveProfileData(id, data)) throw lastStorageFailure!
   const next: ProfileIndex = {
     activeId: id,
     profiles: [...index.profiles, { id, name: name.trim() }],
@@ -814,7 +1043,7 @@ export function createProfileWithData(
   data: AppData,
 ): CreatedProfile {
   const id = newProfileId()
-  saveProfileData(id, data)
+  if (!saveProfileData(id, data)) throw lastStorageFailure!
   const next: ProfileIndex = {
     activeId: id,
     profiles: [...index.profiles, { id, name: data.companyName }],
@@ -835,18 +1064,38 @@ export function deleteProfile(
   const remaining = index.profiles.filter((p) => p.id !== id)
   if (remaining.length === index.profiles.length) return null
 
-  try {
-    localStorage.removeItem(dataKey(id))
-  } catch (err) {
-    console.error("No se pudo borrar los datos del perfil", err)
-  }
-
   const next: ProfileIndex = {
     activeId: index.activeId === id ? remaining[0].id : index.activeId,
     profiles: remaining,
   }
   saveIndex(next)
+  // Borrar solo después de retirar la referencia del índice.
+  localStorage.removeItem(dataKey(id))
+  localStorage.removeItem(`planilla_previous:${dataKey(id)}`)
   return next
+}
+
+/** Recuperación explícita del índice; conserva los bytes dañados. */
+export function recoverProfileIndex(): void {
+  const profiles: ProfileMeta[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i)!
+    if (!key.startsWith(DATA_PREFIX)) continue
+    let name = "Empresa por recuperar"
+    try { name = decodeStoredData(localStorage.getItem(key)!, key).companyName } catch { /* conservar también perfiles dañados */ }
+    profiles.push({ id: key.slice(DATA_PREFIX.length), name })
+  }
+  if (!profiles.length) throw new Error("No se encontraron empresas locales. Importa un respaldo o recupera desde la nube.")
+  const raw = readStored(INDEX_KEY)
+  if (raw !== null) localStorage.setItem(`planilla_damaged:${INDEX_KEY}:${Date.now()}`, raw)
+  saveIndex({ activeId: profiles[0].id, profiles })
+}
+
+export function restoreProfileRaw(id: string, raw: string): void {
+  decodeStoredData(raw, dataKey(id))
+  const previous = readStored(dataKey(id))
+  if (previous !== null) localStorage.setItem(`planilla_damaged:${dataKey(id)}:${Date.now()}`, previous)
+  writeStored(dataKey(id), raw)
 }
 
 export function exportJSON(data: AppData): void {
@@ -884,7 +1133,8 @@ export function importJSON(file: File): Promise<AppData> {
         )
         return
       }
-      resolve(normalizeData(parsed))
+      try { resolve(decodeStoredData(JSON.stringify(parsed))) }
+      catch (err) { reject(err) }
     }
     reader.onerror = () => reject(new Error("Error al leer el archivo"))
     reader.readAsText(file)
@@ -997,6 +1247,15 @@ export function mergeAppData(
     incoming.costCashCounts,
     winner,
   )
+  const fixedExpenses = mergeById(current.fixedExpenses, incoming.fixedExpenses, winner)
+
+  // Igual que los registros diarios: el pago que salda un servicio en un mes
+  // es uno solo aunque cada copia le haya puesto un id distinto.
+  const fixedPayments = new Map(current.fixedExpensePayments.map((p) => [fixedPaymentKey(p), p]))
+  for (const p of incoming.fixedExpensePayments) {
+    if (winner === "current" && fixedPayments.has(fixedPaymentKey(p))) continue
+    fixedPayments.set(fixedPaymentKey(p), p)
+  }
 
   const data: AppData = {
     ...current,
@@ -1004,6 +1263,7 @@ export function mergeAppData(
     timeEntries: [...entryMap.values()],
     manualAdjustments: adjustments.merged,
     closedPeriods: [...closedMap.values()],
+    payrollArchives: [...new Map([...incoming.payrollArchives, ...current.payrollArchives].map(c => [c.id ?? `${c.key}:${c.closedAt}`, c])).values()],
     transactions: transactions.merged,
     counterparties: counterparties.merged,
     budgets: budgets.merged,
@@ -1013,7 +1273,28 @@ export function mergeAppData(
     costTemplates: costTemplates.merged,
     costOperators: costOperators.merged,
     costCashCounts: costCashCounts.merged,
+    fixedExpenses: fixedExpenses.merged,
+    fixedExpensePayments: [...fixedPayments.values()],
+    dailyExpenses: mergeById(current.dailyExpenses, incoming.dailyExpenses, winner).merged,
+    supplierPayments: mergeById(current.supplierPayments, incoming.supplierPayments, winner).merged,
   }
+
+  // Una fusión no es una reapertura: preservar entradas/cuotas protegidas del destino.
+  const protectedKeys = new Set(current.closedPeriods.map(c => c.key))
+  data.timeEntries = [
+    ...data.timeEntries.filter(e => !protectedKeys.has(periodKeyForDate(e.date))),
+    ...current.timeEntries.filter(e => protectedKeys.has(periodKeyForDate(e.date))),
+  ]
+  data.manualAdjustments = [
+    ...data.manualAdjustments.filter(a => !protectedKeys.has(a.periodKey)),
+    ...current.manualAdjustments.filter(a => protectedKeys.has(a.periodKey)),
+  ]
+  data.loans = data.loans.map(loan => {
+    const previous = current.loans.find(l => l.id === loan.id)
+    const charges = Object.fromEntries(Object.entries(loan.charges).filter(([key]) => !protectedKeys.has(key)))
+    for (const key of protectedKeys) if (previous && key in previous.charges) charges[key] = previous.charges[key]
+    return { ...loan, charges }
+  })
 
   const preview: MergePreview = {
     newEmployees: employees.added,

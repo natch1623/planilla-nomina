@@ -24,7 +24,7 @@ export const STATUS_INFO: Record<CloudStatus, { label: string; desc: string; dot
   synced: { label: "Sincronizado", desc: "Todos ven la misma versión.", dot: "bg-ok" },
   pending: {
     label: "Cambios por subir",
-    desc: "Guardado en este equipo; se sube a la nube en cuanto haya conexión.",
+    desc: "Hay cambios pendientes de confirmar en la nube. Revisa también el guardado de este equipo.",
     dot: "bg-amber",
   },
   saving: { label: "Subiendo…", desc: "Guardando en la nube.", dot: "bg-brand animate-pulse" },

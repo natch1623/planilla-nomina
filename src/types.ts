@@ -71,10 +71,15 @@ export interface PayPeriod {
 
 /** Planilla congelada: el cálculo queda fijo aunque después cambien tarifas o registros. */
 export interface ClosedPeriod {
+  id?: string
+  revision?: number
+  supersedes?: string
   key: string // `${year}-${month}-${half}`
   period: PayPeriod
   closedAt: string // ISO timestamp
   summaries: EmployeeSummary[]
+  /** Datos de origen para reimprimir sin usar tarifas/asistencia actuales. */
+  snapshot?: Pick<AppData, "companyName" | "employees" | "timeEntries" | "manualAdjustments" | "loans" | "overtimeThreshold" | "standardDayHours" | "holidayRate" | "payVacations" | "payHolidays" | "paySickLeave">
 }
 
 export type PayrollAdjustmentKind = "bono" | "descuento"
@@ -101,6 +106,8 @@ export interface AppData {
   payHolidays: boolean // ¿se paga el feriado no trabajado?
   paySickLeave: boolean // ¿el patrono paga la incapacidad? (en Panamá suele pagarla la CSS)
   closedPeriods: ClosedPeriod[]
+  /** Cierres anteriores: se añaden al reabrir y nunca se reemplazan. */
+  payrollArchives: ClosedPeriod[]
   manualAdjustments: PayrollAdjustment[]
   transactions: Transaction[]
   counterparties: Counterparty[]
@@ -111,6 +118,15 @@ export interface AppData {
   costTemplates: CostTemplate[]
   costOperators: CostOperator[]
   costCashCounts: CostCashCount[]
+  /** Servicios que se pagan cada mes (luz, agua…). Los rangos por sección no los reciben. */
+  fixedExpenses: FixedExpense[]
+  fixedExpensePayments: FixedExpensePayment[]
+  /** Gastos sueltos del día a día (gasolina, comida…). Mismo acceso que los fijos. */
+  dailyExpenses: DailyExpense[]
+  /** Pagos a empresas y proveedores hechos por administración. */
+  supplierPayments: SupplierPayment[]
+  /** Si los gastos de cada lista se anotan también en Contabilidad. */
+  expenseSettings: ExpenseSettings
   /** Dinero en caja/banco al inicio, antes del primer movimiento registrado. */
   openingBalance: number
   openingBalanceDate: string // YYYY-MM-DD ('' = sin fecha declarada)
@@ -301,6 +317,121 @@ export interface CostCashCount {
   at: string // ISO timestamp
   cashOnHand: number // efectivo en caja, en USD
   notes: string
+}
+
+/**
+ * Gasto fijo: un servicio que llega a cobrarse todos los meses (internet,
+ * agua, luz, basura). Vive aparte de la contabilidad a propósito: es una
+ * lista de control para el administrador —¿ya se pagó la luz de este mes?—
+ * y no alimenta el flujo de caja ni el estado de resultados.
+ */
+export interface FixedExpense {
+  id: string
+  name: string // "Luz", "Internet"
+  provider: string // empresa que cobra
+  accountNumber: string // NIS, número de contrato o de cliente
+  /** Lo que suele llegar, para estimar el mes mientras no hay factura. 0 = sin estimar. */
+  estimatedAmount: number
+  /** Día del mes en que vence (1–31; se ajusta en meses más cortos). 0 = sin fecha. */
+  dueDay: number
+  /**
+   * Cada cuántos meses llega la factura: 1 mensual, 2 bimestral, 3
+   * trimestral, 6 semestral, 12 anual. Se cuenta desde `startMonth`; los
+   * meses intermedios no se cobran y no aparecen como pendientes.
+   */
+  frequency: FixedExpenseFrequency
+  /**
+   * Si al marcar pagado se anota también un gasto en Contabilidad, para que
+   * el flujo de caja y el estado de resultados lo incluyan sin teclearlo
+   * dos veces.
+   */
+  recordInAccounting: boolean
+  /** Primer mes que se controla, `YYYY-MM`: los anteriores no cuentan como vencidos. */
+  startMonth: string
+  notes: string
+  active: boolean // false = servicio dado de baja; se conserva su historial
+  /**
+   * Meses en que estuvo dado de baja, para que al reactivarlo esos meses no
+   * aparezcan como vencidos. `to` es exclusivo; '' = sigue de baja.
+   */
+  pauses: FixedExpensePause[]
+}
+
+export type FixedExpenseFrequency = 1 | 2 | 3 | 6 | 12
+
+export interface FixedExpensePause {
+  from: string // YYYY-MM, primer mes sin cobro
+  to: string // YYYY-MM en que volvió a cobrarse; '' mientras siga de baja
+}
+
+/**
+ * Un pago de la factura de un mes. El mes queda saldado con un pago que no
+ * es abono; antes de eso puede tener varios abonos.
+ */
+export interface FixedExpensePayment {
+  id: string
+  expenseId: string
+  month: string // YYYY-MM de la factura que se paga
+  amount: number // lo pagado en este pago
+  /** Abono: se pagó una parte y la factura sigue pendiente. */
+  partial: boolean
+  /** Gasto que se anotó en Contabilidad por este pago; '' si ninguno. */
+  transactionId: string
+  paidOn: string // YYYY-MM-DD
+  paymentMethod: PaymentMethod
+  reference: string // número de factura o de comprobante
+  notes: string
+  attachments: Attachment[]
+  createdAt: string // ISO
+}
+
+/**
+ * Gasto suelto del día a día: gasolina, comida, un taxi. Puede haber varios
+ * el mismo día o pasar semanas sin ninguno; se anota rápido y ya pagado.
+ * Como los fijos, vive aparte de Contabilidad salvo que se pida anotarlo.
+ */
+export interface DailyExpense {
+  id: string
+  date: string // YYYY-MM-DD
+  category: string // "Gasolina", "Comida"…
+  amount: number
+  paymentMethod: PaymentMethod
+  paidBy: string // quién lo pagó o a quién se le reembolsa ('' = no se anotó)
+  notes: string
+  attachments: Attachment[]
+  /** Gasto que se anotó en Contabilidad por este; '' si ninguno. */
+  transactionId: string
+  createdAt: string // ISO
+}
+
+/**
+ * Pago de administración a una empresa o proveedor: como un pago de Caja,
+ * pero con factura y forma de pago, y sin turnos ni encargadas.
+ */
+export interface SupplierPayment {
+  id: string
+  date: string // YYYY-MM-DD
+  supplierName: string // nombre o razón social
+  taxId: string // RUC / cédula
+  dv: string // dígito verificador del RUC ('' si no aplica, p. ej. cédula)
+  concept: string // qué se compró o pagó
+  invoiceNumber: string
+  amount: number // total pagado, impuesto incluido
+  /**
+   * ITBMS incluido en el total (0 = sin impuesto o no se anotó). Va aparte
+   * porque el contador lo necesita separado para el crédito fiscal.
+   */
+  itbms: number
+  paymentMethod: PaymentMethod
+  notes: string
+  attachments: Attachment[]
+  transactionId: string
+  createdAt: string // ISO
+}
+
+export interface ExpenseSettings {
+  dailyToAccounting: boolean
+  suppliersToAccounting: boolean
 }
 
 /** Conteo de días por tipo dentro del período. */
